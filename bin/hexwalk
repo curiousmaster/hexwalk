@@ -1,0 +1,748 @@
+#!/usr/bin/env python3
+import curses, os, sys, re, json
+from datetime import datetime
+
+DEFAULT_DATA_DIR = "/usr/local/share/hexwalk"
+
+COLOR_CAT = 1
+COLOR_HIT = 2
+COLOR_HIGHLIGHT = 3
+COLOR_STATUS = 4
+
+CAT_W = 18
+DETAILS_W = 50
+HITS_MIN_W = 10
+SEP = 2
+
+# ---------------- HEX FILE PARSER -----------------
+def is_hex_file(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            for _ in range(10):  # only check first few lines
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    return line.startswith(b":")
+    except OSError:
+        return False
+    return False
+
+def is_elf(binary):
+    return binary.startswith(b"\x7fELF")
+
+def load_binary(file_path):
+    """Load a file as raw binary."""
+    with open(file_path,"rb") as f:
+        return f.read()
+def hex_to_bin(file_path):
+    """
+    Convert an Intel HEX file to a flat binary image.
+
+    Supports:
+      - Data records (00)
+      - End Of File (01)
+      - Extended Linear Address (04)
+
+    Unsupported record types are ignored safely.
+    """
+    memory = bytearray()
+    max_addr = 0
+    base_addr = 0  # Upper 16 bits from type 04 records
+
+    with open(file_path, "r", encoding="ascii", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line.startswith(":"):
+                continue
+
+            try:
+                byte_count = int(line[1:3], 16)
+                address = int(line[3:7], 16)
+                record_type = int(line[7:9], 16)
+                data = line[9:9 + byte_count * 2]
+            except ValueError:
+                continue
+
+            # ----- Data record -----
+            if record_type == 0x00:
+                abs_addr = base_addr + address
+                bytes_data = bytes(
+                    int(data[i:i + 2], 16)
+                    for i in range(0, len(data), 2)
+                )
+
+                end_addr = abs_addr + len(bytes_data)
+                if len(memory) < end_addr:
+                    memory.extend(b"\x00" * (end_addr - len(memory)))
+
+                memory[abs_addr:end_addr] = bytes_data
+                max_addr = max(max_addr, end_addr)
+
+            # ----- End Of File -----
+            elif record_type == 0x01:
+                break
+
+            # ----- Extended Linear Address -----
+            elif record_type == 0x04:
+                base_addr = int(data, 16) << 16
+
+            # ----- Ignore other record types safely -----
+            else:
+                continue
+
+    return bytes(memory[:max_addr])
+
+# ---------------- KEYWORDS -----------------
+def load_keywords(data_dir):
+    findings = {}
+    for fname in os.listdir(data_dir):
+        path = os.path.join(data_dir,fname)
+        if os.path.isfile(path):
+            keywords = [l.strip() for l in open(path,"r") if l.strip()]
+            findings[fname] = [{"pattern":k} for k in keywords]
+    return findings
+
+# ---------------- SEARCH -----------------
+def search_keywords(binary, findings):
+    results = {}
+    for cat, kws in findings.items():
+        cat_hits = []
+        for k in kws:
+            try:
+                pat = re.compile(re.escape(k["pattern"]))
+            except:
+                continue
+            for m in pat.finditer(binary.decode("latin1",errors="ignore")):
+                s = m.group()
+                off = m.start()
+                start_context = max(0, off-32)
+                end_context = min(len(binary), off+len(s)+32)
+                context_bytes = binary[start_context:end_context]
+                context_ascii = "".join(chr(b) if 32 <= b <= 126 else "." for b in context_bytes)
+                # Highlight the keyword in context for Hits pane
+                context_display = context_ascii
+                cat_hits.append({
+                    "string": context_display,
+                    "match_key": k["pattern"],
+                    "match_span": m.span(),
+                    "match_type": "plain",
+                    "context": {"offset": off, "bytes": context_bytes}
+                })
+        if cat_hits:
+            results[cat] = cat_hits
+    return results
+
+# ---------------- OD STYLE -----------------
+def od_bc_view(data, offset, keyword, context=64):
+    start = max(0, offset - context)
+    end = min(len(data), offset + context)
+
+    lines = []
+    BYTES_PER_LINE = 8
+
+    for i in range(start, end, BYTES_PER_LINE):
+        chunk = data[i:i + BYTES_PER_LINE]
+
+        # Offset
+        line = f"{i:08X}  "
+
+        # Hex bytes
+        hex_part = " ".join(f"{b:02X}" for b in chunk)
+        hex_part = hex_part.ljust(BYTES_PER_LINE * 3 - 1)
+
+        # ASCII
+        ascii_part = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+
+        # Highlight keyword (ASCII only)
+#        if keyword in ascii_part:
+#            ascii_part = ascii_part.replace(keyword, f"<[{keyword}]>")
+
+        line += hex_part + "  " + ascii_part
+        lines.append(line)
+
+    return lines
+
+# ---------------- TUI -----------------
+class HexwalkTUI:
+    def __init__(self,stdscr,findings,binary,filename):
+        self.stdscr = stdscr
+        self.findings = findings
+        self.filename = filename
+        self.binary = binary
+        self.categories = sorted(findings.keys())
+        self.pane = 0
+        self.cat_i = 0
+        self.hit_i = 0
+        self.hit_offset = 0
+        self.filter_text = ""
+        self.details_visible = True
+        self.details_width = 48
+        self.init_curses()
+        self.main_loop()
+
+    def init_curses(self):
+        curses.curs_set(0)
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(COLOR_CAT, curses.COLOR_CYAN, -1)
+        curses.init_pair(COLOR_HIT, curses.COLOR_YELLOW, -1)
+        curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_GREEN)
+        curses.init_pair(COLOR_STATUS, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        self.stdscr.keypad(True)
+
+    def filtered_hits(self):
+        hits = self.findings.get(self.categories[self.cat_i],[])
+        if not self.filter_text:
+            return hits
+        ft = self.filter_text.lower()
+        return [h for h in hits if ft in h['string'].lower()]
+
+    def safe_basename(self):
+        """
+        Return a filesystem-safe base name for exports.
+        """
+        base = os.path.basename(self.filename)
+        # Replace anything non-alphanumeric with underscore
+        base = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+        return base
+
+    # ---------------- SUMMARY -----------------
+    def build_summary(self):
+        """
+        Build a summary structure:
+        {
+            category: {
+                "total": int,
+                "keywords": { keyword: count }
+            }
+        }
+        """
+        summary = {}
+    
+        for category, hits in self.findings.items():
+            cat_summary = {
+                "total": len(hits),
+                "keywords": {}
+            }
+    
+            for h in hits:
+                kw = h["match_key"]
+                cat_summary["keywords"][kw] = (
+                    cat_summary["keywords"].get(kw, 0) + 1
+                )
+    
+            summary[category] = cat_summary
+    
+        return summary
+
+    def export_summary_text(self, lines):
+        fname = f"hexwalk_{self.safe_basename()}_summary.txt"
+        with open(fname, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(line + "\n")
+    
+        h, w = self.stdscr.getmaxyx()
+        msg = f"Summary exported to {fname}"
+        self.stdscr.addstr(
+            h - 2,
+            0,
+            msg[:w - 1],
+            curses.A_BOLD | curses.color_pair(COLOR_STATUS)
+        )
+        self.stdscr.refresh()
+        curses.napms(1200)
+
+    def show_summary(self):
+        summary = self.build_summary()
+        lines = []
+
+        total_hits = sum(cat["total"] for cat in summary.values())
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        lines.append("HexWalk Summary")
+        lines.append("=" * 15)
+        lines.append("")
+        lines.append(f"Analyzed file : {self.filename}")
+        lines.append(f"Generated     : {ts}")
+        lines.append("")
+        lines.append(f"Total categories : {len(summary)}")
+        lines.append(f"Total hits       : {total_hits}")
+        lines.append("")
+    
+        for category in sorted(summary.keys()):
+            cat_name = self.format_category_name(category)
+            cat_data = summary[category]
+    
+            lines.append(f"Category: {cat_name} ({cat_data['total']} hits)")
+            lines.append("-" * (len(lines[-1])))
+    
+            for kw, cnt in sorted(
+                cat_data["keywords"].items(),
+                key=lambda x: x[1],
+                reverse=True
+            ):
+                lines.append(f"  {kw:<20} : {cnt}")
+    
+            lines.append("")
+    
+        # ---- Screen loop ----
+        offset = 0
+        while True:
+            self.stdscr.clear()
+            h, w = self.stdscr.getmaxyx()
+    
+            for i in range(h - 1):
+                idx = offset + i
+                if idx >= len(lines):
+                    break
+                self.stdscr.addstr(
+                    i,
+                    0,
+                    lines[idx][:w - 1]
+                )
+    
+            status = "[ q ] back   [ e ] export summary to text"
+            self.stdscr.addstr(
+                h - 1,
+                0,
+                status[:w - 1],
+                curses.color_pair(COLOR_STATUS) | curses.A_BOLD
+            )
+    
+            self.stdscr.refresh()
+            key = self.stdscr.getch()
+    
+            if key in (ord("q"), 27):
+                break
+            elif key == ord("e"):
+                self.export_summary_text(lines)
+            elif key == curses.KEY_DOWN:
+                offset = min(offset + 1, max(0, len(lines) - h + 1))
+            elif key == curses.KEY_UP:
+                offset = max(0, offset - 1)
+
+    # ---------------- MODAL -----------------
+    def show_hit_modal(self, hit):
+        h, w = self.stdscr.getmaxyx()
+        modal_h = min(30, h-4)
+        modal_w = min(100, w-4)
+        modal_y = (h - modal_h) // 2
+        modal_x = (w - modal_w) // 2
+        win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
+        win.keypad(True)
+        win.clear()
+        win.box()
+
+        bytes_per_line = 16
+        context_lines = modal_h - 6
+
+        data = self.binary
+        kw = hit['match_key'].encode("latin1", errors="ignore")
+        offset = hit['context']['offset']
+
+        view_offset = max(0, offset - (context_lines // 2) * bytes_per_line)
+
+        while True:
+            win.clear()
+            win.box()
+
+            # ---- Top Info ----
+            info_lines = [
+                f"Offset       : 0x{offset:08X}",
+                f"Match type   : {hit['match_type']}",
+                f"Match key    : {hit['match_key']}",
+                f"String length: {len(hit['match_key'])}"
+            ]
+            for i,line in enumerate(info_lines):
+                win.addstr(i+1,2,line[:modal_w-4],curses.A_BOLD|curses.color_pair(COLOR_CAT))
+
+            # Horizontal line
+            win.hline(len(info_lines)+1,1,curses.ACS_HLINE,modal_w-2)
+
+            # ---- Hex Editor ----
+            for i in range(context_lines):
+                line_start = view_offset + i*bytes_per_line
+                if line_start >= len(data):
+                    break
+                chunk = data[line_start:line_start+bytes_per_line]
+                hex_part = " ".join(f"{b:02X}" for b in chunk)
+                if len(chunk) < bytes_per_line:
+                    hex_part += "   "*(bytes_per_line - len(chunk))
+                ascii_part = "".join(chr(b) if 32<=b<=126 else "." for b in chunk)
+
+                # Highlight keyword
+                highlight_start = ascii_part.find(hit['match_key'])
+                if highlight_start >=0:
+                    win.addstr(i+len(info_lines)+2,2,f"{line_start:08X}",curses.color_pair(COLOR_CAT))
+                    win.addstr(i+len(info_lines)+2,12,hex_part[:3*bytes_per_line],curses.color_pair(COLOR_CAT))
+                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2,ascii_part[:highlight_start],curses.color_pair(COLOR_CAT))
+                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2+highlight_start,
+                               ascii_part[highlight_start:highlight_start+len(hit['match_key'])],
+                               curses.color_pair(COLOR_HIGHLIGHT)|curses.A_BOLD)
+                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2+highlight_start+len(hit['match_key']),
+                               ascii_part[highlight_start+len(hit['match_key']):],curses.color_pair(COLOR_CAT))
+                else:
+                    win.addstr(i+len(info_lines)+2,2,f"{line_start:08X}",curses.color_pair(COLOR_CAT))
+                    win.addstr(i+len(info_lines)+2,12,hex_part[:3*bytes_per_line],curses.color_pair(COLOR_CAT))
+                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2,ascii_part[:bytes_per_line],curses.color_pair(COLOR_CAT))
+
+            # Status
+            status = "Up/Down scroll | q to close"
+            win.addstr(modal_h-2,2,status[:modal_w-4],curses.A_BOLD|curses.color_pair(COLOR_STATUS))
+            win.refresh()
+
+            k = win.getch()
+            if k in [ord("q"),27]:
+                break
+            elif k==curses.KEY_UP:
+                view_offset = max(0,view_offset-bytes_per_line)
+            elif k==curses.KEY_DOWN:
+                view_offset = min(len(data)-bytes_per_line,view_offset+bytes_per_line)
+
+    # ---------------- HELP -----------------
+    def show_help(self):
+        self.stdscr.clear()
+        h,w = self.stdscr.getmaxyx()
+        lines = [
+            "Hexwalk TUI Help",
+            "",
+            "Navigation:",
+            "  Arrow Up/Down : Move in pane",
+            "  Tab           : Switch pane (Categories/Hits/Details)",
+            "  Enter         : View hit modal",
+            "  /             : Filter hits",
+            "  e             : Export current findings to hexwalk_<filename>_export.json",
+            "  s             : Show summary",
+            "  h             : Show this help",
+            "  q             : Quit",
+            "",
+            "Press any key to return..."
+        ]
+        for i,line in enumerate(lines):
+            if i>=h-1: break
+            self.stdscr.addstr(i,0,line[:w-1])
+        self.stdscr.refresh()
+        self.stdscr.getch()
+
+    # ---------------- HITS COUNT -----------------
+    def category_hit_count(self, category):
+        hits = self.findings.get(category, [])
+        if not self.filter_text:
+            return len(hits)
+        ft = self.filter_text.lower()
+        return sum(1 for h in hits if ft in h["string"].lower())
+
+    # ---------------- CATEGORY NAME -----------------
+    def format_category_name(self, name):
+        base = os.path.splitext(name)[0]
+        return base[:1].upper() + base[1:] if base else base
+
+    # ---------------- EXPORT -----------------
+    def exportable_findings(self):
+        """
+        Return a JSON-safe version of findings.
+        Raw bytes are converted to hex strings.
+        """
+        out = {}
+    
+        for category, hits in self.findings.items():
+            out[category] = []
+            for h in hits:
+                clean = dict(h)
+    
+                # Fix context
+                ctx = dict(clean.get("context", {}))
+                if "bytes" in ctx:
+                    ctx["bytes_hex"] = ctx["bytes"].hex()
+                    del ctx["bytes"]
+    
+                clean["context"] = ctx
+                out[category].append(clean)
+    
+        return out
+
+    # ---------------- DRAW -----------------
+    def draw(self):
+        self.stdscr.clear()
+        h, w = self.stdscr.getmaxyx()
+    
+        # ---------- Layout constants ----------
+        CAT_W = 18
+        HITS_MIN_W = 10
+        DETAILS_MIN_W = 50
+        SEP_CHAR = curses.ACS_VLINE
+        SEP_PAD = 1  # space on each side of separator
+    
+        # ---------- Initial widths ----------
+        cat_w = CAT_W
+        details_w = self.details_width if self.details_visible else 0
+    
+        # Categories always start at column 0
+        cat_x = 0
+    
+        # Greedy middle pane
+        hits_w = w - cat_w - details_w - 2 * (1 + SEP_PAD)
+    
+        # Shrink details if needed
+        if self.details_visible and hits_w < HITS_MIN_W:
+            details_w = max(
+                DETAILS_MIN_W,
+                details_w - (HITS_MIN_W - hits_w)
+            )
+            hits_w = w - cat_w - details_w - 2 * (1 + SEP_PAD)
+    
+        # Auto-hide details if still too small
+        if hits_w < HITS_MIN_W:
+            details_w = 0
+            self.details_visible = False
+            hits_w = w - cat_w - (1 + SEP_PAD)
+    
+        # ---------- X positions ----------
+        sep1_x = cat_x + cat_w + SEP_PAD
+        hits_x = sep1_x + 1 + SEP_PAD
+    
+        sep2_x = hits_x + hits_w + SEP_PAD if details_w else None
+        details_x = sep2_x + 1 + SEP_PAD if sep2_x is not None else None
+    
+        # ---------- Compute hits ONCE ----------
+        hits = self.filtered_hits()
+    
+        # ---------- Clear panes (rows 0..h-2 only) ----------
+        for y in range(0, h - 1):
+            if cat_x + cat_w <= w:
+                self.stdscr.addstr(y, cat_x, " " * cat_w)
+            if hits_x + hits_w <= w:
+                self.stdscr.addstr(y, hits_x, " " * hits_w)
+            if self.details_visible and details_w > 0 and details_x + details_w <= w:
+                self.stdscr.addstr(y, details_x, " " * details_w)
+    
+        # ---------- Vertical separators ----------
+        for y in range(0, h - 1):
+            if sep1_x < w:
+                self.stdscr.addch(y, sep1_x, SEP_CHAR)
+            if self.details_visible and sep2_x is not None and sep2_x < w:
+                self.stdscr.addch(y, sep2_x, SEP_CHAR)
+    
+        # ---------- Categories ----------
+        self.stdscr.addstr(
+            0,
+            cat_x,
+            "Categories".ljust(cat_w),
+            curses.A_BOLD | curses.color_pair(COLOR_CAT)
+        )
+    
+        for i, cat in enumerate(self.categories[:h - 2]):
+            count = self.category_hit_count(cat)
+            cat_name = self.format_category_name(cat)
+            label = f"{count:>4} {cat_name}"
+    
+            attr = (
+                curses.A_REVERSE
+                if self.pane == 0 and i == self.cat_i
+                else curses.color_pair(COLOR_CAT)
+            )
+    
+            if count == 0:
+                attr |= curses.A_DIM
+    
+            self.stdscr.addstr(
+                i + 1,
+                cat_x,
+                label[:cat_w].ljust(cat_w),
+                attr
+            )
+    
+        # ---------- Hits ----------
+        self.stdscr.addstr(
+            0,
+            hits_x,
+            "Hits".ljust(hits_w),
+            curses.A_BOLD | curses.color_pair(COLOR_HIT)
+        )
+    
+        hit_height = h - 2
+    
+        if self.hit_i < self.hit_offset:
+            self.hit_offset = self.hit_i
+        elif self.hit_i >= self.hit_offset + hit_height:
+            self.hit_offset = self.hit_i - hit_height + 1
+    
+        for i in range(hit_height):
+            idx = self.hit_offset + i
+            if idx >= len(hits):
+                break
+        
+            hit = hits[idx]
+            text = hit["string"]
+            kw = hit["match_key"]
+        
+            attr_normal = (
+                curses.A_REVERSE
+                if self.pane == 1 and idx == self.hit_i
+                else curses.color_pair(COLOR_HIT)
+            )
+        
+            attr_highlight = curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+        
+            # Trim text to pane width
+            visible = text[:hits_w - 1]
+        
+            # Find keyword position (first occurrence)
+            pos = visible.find(kw)
+        
+            if pos >= 0:
+                # Before keyword
+                self.stdscr.addstr(
+                    i + 1,
+                    hits_x,
+                    visible[:pos],
+                    attr_normal
+                )
+        
+                # Keyword (highlighted)
+                self.stdscr.addstr(
+                    i + 1,
+                    hits_x + pos,
+                    visible[pos:pos + len(kw)],
+                    attr_highlight
+                )
+        
+                # After keyword
+                self.stdscr.addstr(
+                    i + 1,
+                    hits_x + pos + len(kw),
+                    visible[pos + len(kw):].ljust(hits_w - pos - len(kw) - 1),
+                    attr_normal
+                )
+            else:
+                # No keyword visible
+                self.stdscr.addstr(
+                    i + 1,
+                    hits_x,
+                    visible.ljust(hits_w - 1),
+                    attr_normal
+                )
+
+        # ---------- Details ----------
+        if self.details_visible and details_w > 0:
+            SAFE_W = max(1, details_w - 2)  # leave 2 columns unused (critical)
+        
+            # Header
+            self.stdscr.addstr(
+                0,
+                details_x,
+                "Details"[:SAFE_W].ljust(SAFE_W),
+                curses.A_BOLD | curses.color_pair(COLOR_CAT)
+            )
+        
+            if hits:
+                hit = hits[self.hit_i]
+                offset = hit["context"]["offset"]
+        
+                # IMPORTANT: od_bc_view must NOT inject highlighting
+                od_lines = od_bc_view(
+                    self.binary,
+                    offset,
+                    hit["match_key"],
+                    context=32
+                )
+        
+                for i, line in enumerate(od_lines[:h - 2]):
+                    # Hard truncate and pad – no decoration
+                    safe_line = line[:SAFE_W]
+                    self.stdscr.addstr(
+                        i + 1,
+                        details_x,
+                        safe_line.ljust(SAFE_W),
+                        curses.color_pair(COLOR_CAT)
+                    )
+    
+        # ---------- Status bar ----------
+        status = (
+            "Tab pane | ↑↓ move | Enter view | / filter | "
+            "d toggle details | [ ] resize | e export | h help | q quit"
+        )
+    
+        if w > 1:
+            self.stdscr.addstr(
+                h - 1,
+                0,
+                status[:w - 1].ljust(w - 1),
+                curses.color_pair(COLOR_STATUS) | curses.A_BOLD
+            )
+    
+        self.stdscr.refresh()
+
+    # ---------------- MAIN LOOP -----------------
+    def main_loop(self):
+        while True:
+            self.draw()
+            key = self.stdscr.getch()
+            hits = self.filtered_hits()
+            hit_height = self.stdscr.getmaxyx()[0]-2
+
+            if key==ord("q"): break
+            elif key==ord("h"): self.show_help()
+            elif key in [curses.KEY_RIGHT]: self.pane = min(2,self.pane+1)
+            elif key in [curses.KEY_LEFT]: self.pane = max(0,self.pane-1)
+            elif key==curses.KEY_DOWN:
+                if self.pane==0: self.cat_i=min(len(self.categories)-1,self.cat_i+1);self.hit_i=0;self.hit_offset=0
+                elif self.pane==1 and hits: self.hit_i=min(len(hits)-1,self.hit_i+1)
+            elif key==curses.KEY_UP:
+                if self.pane==0: self.cat_i=max(0,self.cat_i-1);self.hit_i=0;self.hit_offset=0
+                elif self.pane==1 and hits: self.hit_i=max(0,self.hit_i-1)
+            elif key==9: self.pane=(self.pane+1)%3
+            elif key==ord("/"):
+                curses.echo()
+                self.stdscr.addstr(0,0,"Filter: ")
+                self.filter_text = self.stdscr.getstr().decode()
+                curses.noecho()
+                self.hit_i=0;self.hit_offset=0
+            elif key==ord("e"):
+                fname = f"hexwalk_{self.safe_basename()}_export.json"
+                with open(fname,"w") as f:
+                    json.dump(self.exportable_findings(),f,indent=2)
+                h,w=self.stdscr.getmaxyx()
+                self.stdscr.addstr(h-2,0,"Exported current findings to hexwalk_export.json",curses.A_BOLD)
+                self.stdscr.refresh()
+                curses.napms(1000)
+            elif key == ord("s"):
+                self.show_summary()
+            elif key == ord("d"):
+                self.details_visible = not self.details_visible
+            elif key == ord("["):
+                self.details_width = max(20, self.details_width - 4)
+            elif key == ord("]"):
+                self.details_width = min(120, self.details_width + 4)
+            elif key in [10,13]:
+                if hits: self.show_hit_modal(hits[self.hit_i])
+
+# ---------------- MAIN -----------------
+def main():
+    if len(sys.argv)<2:
+        print(f"Usage: {sys.argv[0]} <file>")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    if is_hex_file(file_path):
+        binary = hex_to_bin(file_path)
+    else:
+        binary = load_binary(file_path)
+
+#    if is_elf(binary):
+#        print("ELF file detected - scanning raw file bytes  (including headers/metadata)")
+
+    findings = load_keywords(DEFAULT_DATA_DIR)
+    matches = search_keywords(binary, findings)
+
+    if not matches:
+        print("No matches found!")
+        sys.exit(0)
+
+    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr,matches,binary,file_path))
+
+if __name__=="__main__":
+    main()
+

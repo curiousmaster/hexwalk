@@ -1,0 +1,29 @@
+3des
+aes
+bcrypt
+cert
+certificate
+crc
+der
+des
+ecdh
+ecdsa
+hmac
+key
+md5
+pbkdf2
+pem
+rsa
+salt
+sha
+sha1
+sha224
+sha256
+sha384
+sha512
+sign
+verify
+
+# PEM blocks
+regex:-----BEGIN CERTIFICATE-----
+regex:-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----

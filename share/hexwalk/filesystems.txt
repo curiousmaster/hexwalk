@@ -1,0 +1,16 @@
+squashfs
+cramfs
+jffs2
+yaffs
+ext2
+ext3
+ext4
+ubifs
+fat
+vfat
+ntfs
+romfs
+
+# Magic strings
+regex:hsqs
+regex:ubifs

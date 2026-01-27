@@ -1,0 +1,23 @@
+socket
+bind
+listen
+accept
+connect
+send
+recv
+sendto
+recvfrom
+select
+poll
+epoll
+ioctl
+ifconfig
+iwconfig
+netlink
+bridge
+iptables
+ssid
+
+# IPs and MACs
+regex:\b\d{1,3}(\.\d{1,3}){3}\b
+regex:([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}

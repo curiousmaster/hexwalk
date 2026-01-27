@@ -1,0 +1,17 @@
+debug
+dbg
+trace
+verbose
+log
+logger
+syslog
+printf
+fprintf
+perror
+panic
+assert
+oops
+bug
+
+# Debug format strings
+regex:%[0-9]*[sdx]
