@@ -1,6 +1,68 @@
 #!/usr/bin/env python3
+# ===================================================
+#
+# NAME
+#     hexwalk - keyword-based binary and firmware analysis tool
+#
+# SYNOPSIS
+#     hexwalk [OPTIONS] <file>
+#
+# DESCRIPTION
+#     HexWalk is a terminal-based analysis tool for inspecting raw binaries
+#     and Intel HEX files using categorized keyword lists and pattern rules.
+#     It scans files for embedded strings, configuration artifacts, credentials,
+#     and other indicators commonly found in firmware, executables, and system
+#     binaries.
+#
+#     Results are presented in an interactive curses-based interface with
+#     category navigation, hit inspection, and a byte-accurate hex viewer.
+#
+# FEATURES
+#     - Supports raw binaries and Intel HEX files
+#     - Category-based keyword scanning
+#     - Regex-based pattern matching
+#     - Interactive TUI with hex and ASCII views
+#     - Per-hit modal inspection with navigation
+#     - Summary and export capabilities
+#
+# OPTIONS
+#     -h, --help
+#         Show help text and exit.
+#
+#     --version
+#         Show version information and exit.
+#
+# INPUT
+#     <file>
+#         File to analyze. Can be a raw binary or Intel HEX file.
+#
+# FILES
+#     /usr/local/share/hexwalk/*.txt
+#         Keyword and rule definition files, one category per file.
+#
+# OUTPUT
+#     hexwalk_<filename>_export.json
+#         JSON export of all findings.
+#
+#     hexwalk_<filename>_summary.txt
+#         Human-readable summary of findings.
+#
+# EXIT STATUS
+#     0   Successful execution
+#     1   Invalid arguments or file error
+#
+# AUTHOR
+#     curiousmaster
+#
+# LICENSE
+#     MIT License
+#
+# ===================================================
 import curses, os, sys, re, json
+import argparse
 from datetime import datetime
+
+VERSION = "1.0"
 
 DEFAULT_DATA_DIR = "/usr/local/share/hexwalk"
 
@@ -848,27 +910,40 @@ class HexwalkTUI:
 
 # ---------------- MAIN -----------------
 def main():
-    if len(sys.argv)<2:
-        print(f"Usage: {sys.argv[0]} <file>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        prog="hexwalk",
+        description="HexWalk – keyword-based binary and firmware analysis tool",
+    )
 
-    file_path = sys.argv[1]
+    parser.add_argument(
+        "file",
+        help="File to analyze (raw binary or Intel HEX)",
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"hexwalk {VERSION}",
+    )
+
+    args = parser.parse_args()
+
+    file_path = args.file
+
+    # --- Load binary safely ---
     if is_hex_file(file_path):
         binary = hex_to_bin(file_path)
     else:
         binary = load_binary(file_path)
 
-#    if is_elf(binary):
-#        print("ELF file detected - scanning raw file bytes  (including headers/metadata)")
-
     findings = load_keywords(DEFAULT_DATA_DIR)
     matches = search_keywords(binary, findings)
 
     if not matches:
-        print("No matches found!")
+        print("No matches found.")
         sys.exit(0)
 
-    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr,matches,binary,file_path))
+    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr, matches, binary))
 
 if __name__=="__main__":
     main()
