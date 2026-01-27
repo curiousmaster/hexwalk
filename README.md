@@ -47,27 +47,30 @@ The tool automatically detects Intel HEX files and converts them into a flat bin
 
 Clone the repository:
 
-```bash
+```
 git clone git@github.com:curiousmaster/hexwalk.git
 cd hexwalk
+```
 
 Install into /usr/local:
-```bash
+```
 make install
+```
 
 This installs:
 * hexwalk to /usr/local/bin
 * Keyword ryle files to /usr/local/share/hexwalk
 
 To uninstall:
-```bash
+```
 make uninstall
 ```
 
 ### Usage
 Basic usage:
-```bash
+```
 hexwalk <file>
+```
 
 ### User Interface Overview:
 HexWalk runs entirely in the terminal and is divided into three primary panes:
