@@ -1,0 +1,13 @@
+# Plain keywords
+logfile
+logging
+syslog
+debug
+trace
+verbose
+audit
+eventlog
+
+# Common assignment patterns
+regex:log(level|file)?\s*=\s*[^\s]+
+regex:debug\s*=\s*(true|false|1|0)

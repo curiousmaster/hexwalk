@@ -1,0 +1,15 @@
+# Plain keywords
+private key
+public key
+secret key
+keystore
+keyfile
+pem
+der
+pkcs
+keypair
+
+# Common assignment patterns
+regex:-----BEGIN\s+(RSA|EC|DSA)?\s*PRIVATE\s+KEY-----
+regex:private(_|-)?key\s*=\s*[^\s]+
+regex:secret(_|-)?key\s*=\s*[^\s]+

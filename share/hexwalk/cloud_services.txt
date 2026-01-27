@@ -1,0 +1,17 @@
+# Plain keywords
+aws
+azure
+gcp
+s3
+ec2
+iam
+metadata
+cloudinit
+cloudwatch
+kms
+keyvault
+
+# Common assignment patterns
+regex:(aws|azure|gcp)_\w+\s*=\s*[^\s]+
+regex:AKIA[0-9A-Z]{16}
+regex:metadata\.google\.internal
