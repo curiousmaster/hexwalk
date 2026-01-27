@@ -9,7 +9,17 @@ COLOR_HIT = 2
 COLOR_HIGHLIGHT = 3
 COLOR_STATUS = 4
 
-CAT_W = 18
+COLOR_CAT_COL1 = curses.COLOR_CYAN
+COLOR_CAT_COL2 = -1
+COLOR_HIT_COL1 = curses.COLOR_YELLOW
+COLOR_HIT_COL2 = -1
+COLOR_HIGHLIGHT_COL1 = curses.COLOR_BLACK
+COLOR_HIGHLIGHT_COL2 = curses.COLOR_GREEN
+COLOR_STATUS_COL1 = curses.COLOR_BLACK
+COLOR_STATUS_COL2 = curses.COLOR_CYAN
+
+
+CAT_W = 32
 DETAILS_W = 50
 HITS_MIN_W = 10
 SEP = 2
@@ -186,10 +196,10 @@ class HexwalkTUI:
         curses.curs_set(0)
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(COLOR_CAT, curses.COLOR_CYAN, -1)
-        curses.init_pair(COLOR_HIT, curses.COLOR_YELLOW, -1)
-        curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_GREEN)
-        curses.init_pair(COLOR_STATUS, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(COLOR_CAT, COLOR_CAT_COL1, COLOR_CAT_COL2)
+        curses.init_pair(COLOR_HIT, COLOR_HIT_COL1, COLOR_HIT_COL2)
+        curses.init_pair(COLOR_HIGHLIGHT, COLOR_HIGHLIGHT_COL1, COLOR_HIGHLIGHT_COL2)
+        curses.init_pair(COLOR_STATUS, COLOR_STATUS_COL1,  COLOR_STATUS_COL2) 
         self.stdscr.keypad(True)
 
     def filtered_hits(self):
@@ -324,82 +334,200 @@ class HexwalkTUI:
                 offset = max(0, offset - 1)
 
     # ---------------- MODAL -----------------
-    def show_hit_modal(self, hit):
+    def show_hit_modal(self, hits, start_index):
         h, w = self.stdscr.getmaxyx()
-        modal_h = min(30, h-4)
-        modal_w = min(100, w-4)
+    
+        # ---------- Modal geometry ----------
+        modal_h = min(37, h - 4)
+        modal_w = min(120, w - 4)
         modal_y = (h - modal_h) // 2
         modal_x = (w - modal_w) // 2
+    
         win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
         win.keypad(True)
-        win.clear()
-        win.box()
-
-        bytes_per_line = 16
-        context_lines = modal_h - 6
-
+    
+        # ---------- Layout constants ----------
+        BYTES_PER_LINE = 16
+        GROUP_SIZE = 8
+        GROUP_GAP = 1
+    
+        INFO_LINES = 4
+        INFO_PAD = 2
+        STATUS_LINES = 1
+        BORDER_LINES = 2
+    
+        HEX_LINES = (
+            modal_h
+            - BORDER_LINES
+            - INFO_LINES
+            - INFO_PAD
+            - STATUS_LINES
+        )
+    
+        # ---------- Hex width calculation ----------
+        groups = (BYTES_PER_LINE + GROUP_SIZE - 1) // GROUP_SIZE
+        hex_width = (
+            BYTES_PER_LINE * 3 - 1 +
+            (groups - 1) * GROUP_GAP
+        )
+    
         data = self.binary
-        kw = hit['match_key'].encode("latin1", errors="ignore")
-        offset = hit['context']['offset']
-
-        view_offset = max(0, offset - (context_lines // 2) * bytes_per_line)
-
+        idx = start_index
+        total = len(hits)
+    
+        # Initial view offset
+        offset = hits[idx]["context"]["offset"]
+        view_offset = max(0, offset - (HEX_LINES // 2) * BYTES_PER_LINE)
+    
         while True:
+            hit = hits[idx]
+            offset = hit["context"]["offset"]
+            match_len = len(hit["match_key"])
+    
             win.clear()
             win.box()
-
-            # ---- Top Info ----
-            info_lines = [
+    
+            # ---------- Info block ----------
+            info = [
                 f"Offset       : 0x{offset:08X}",
                 f"Match type   : {hit['match_type']}",
                 f"Match key    : {hit['match_key']}",
-                f"String length: {len(hit['match_key'])}"
+                f"String length: {match_len}",
             ]
-            for i,line in enumerate(info_lines):
-                win.addstr(i+1,2,line[:modal_w-4],curses.A_BOLD|curses.color_pair(COLOR_CAT))
-
-            # Horizontal line
-            win.hline(len(info_lines)+1,1,curses.ACS_HLINE,modal_w-2)
-
-            # ---- Hex Editor ----
-            for i in range(context_lines):
-                line_start = view_offset + i*bytes_per_line
+    
+            for i, line in enumerate(info):
+                win.addstr(
+                    1 + i,
+                    2,
+                    line[:modal_w - 4],
+                    curses.A_BOLD | curses.color_pair(COLOR_CAT),
+                )
+    
+            sep_y = 1 + INFO_LINES
+            win.hline(sep_y, 1, curses.ACS_HLINE, modal_w - 2)
+    
+            # ---------- Hex view ----------
+            hex_y = sep_y + INFO_PAD
+    
+            for i in range(HEX_LINES):
+                line_start = view_offset + i * BYTES_PER_LINE
                 if line_start >= len(data):
                     break
-                chunk = data[line_start:line_start+bytes_per_line]
-                hex_part = " ".join(f"{b:02X}" for b in chunk)
-                if len(chunk) < bytes_per_line:
-                    hex_part += "   "*(bytes_per_line - len(chunk))
-                ascii_part = "".join(chr(b) if 32<=b<=126 else "." for b in chunk)
-
-                # Highlight keyword
-                highlight_start = ascii_part.find(hit['match_key'])
-                if highlight_start >=0:
-                    win.addstr(i+len(info_lines)+2,2,f"{line_start:08X}",curses.color_pair(COLOR_CAT))
-                    win.addstr(i+len(info_lines)+2,12,hex_part[:3*bytes_per_line],curses.color_pair(COLOR_CAT))
-                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2,ascii_part[:highlight_start],curses.color_pair(COLOR_CAT))
-                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2+highlight_start,
-                               ascii_part[highlight_start:highlight_start+len(hit['match_key'])],
-                               curses.color_pair(COLOR_HIGHLIGHT)|curses.A_BOLD)
-                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2+highlight_start+len(hit['match_key']),
-                               ascii_part[highlight_start+len(hit['match_key']):],curses.color_pair(COLOR_CAT))
-                else:
-                    win.addstr(i+len(info_lines)+2,2,f"{line_start:08X}",curses.color_pair(COLOR_CAT))
-                    win.addstr(i+len(info_lines)+2,12,hex_part[:3*bytes_per_line],curses.color_pair(COLOR_CAT))
-                    win.addstr(i+len(info_lines)+2,12+3*bytes_per_line+2,ascii_part[:bytes_per_line],curses.color_pair(COLOR_CAT))
-
-            # Status
-            status = "Up/Down scroll | q to close"
-            win.addstr(modal_h-2,2,status[:modal_w-4],curses.A_BOLD|curses.color_pair(COLOR_STATUS))
+    
+                chunk = data[line_start:line_start + BYTES_PER_LINE]
+    
+                # ---- Build grouped hex ----
+                hex_chunks = []
+                for j, b in enumerate(chunk):
+                    hex_chunks.append(f"{b:02X}")
+                    if (
+                        (j + 1) % GROUP_SIZE == 0
+                        and (j + 1) < BYTES_PER_LINE
+                    ):
+                        hex_chunks.append(" " * GROUP_GAP)
+    
+                hex_part = " ".join(hex_chunks).ljust(hex_width)
+    
+                ascii_part = "".join(
+                    chr(b) if 32 <= b <= 126 else "."
+                    for b in chunk
+                )
+    
+                base_line = f"{line_start:08X}  {hex_part}  {ascii_part}"
+    
+                win.addstr(
+                    hex_y + i,
+                    2,
+                    base_line[:modal_w - 4],
+                    curses.color_pair(COLOR_CAT),
+                )
+    
+                # ---------- Highlight matching bytes (line-safe) ----------
+                match_start = offset
+                match_end = offset + match_len
+                
+                line_start_abs = line_start
+                line_end_abs = line_start + len(chunk)
+                
+                # Compute overlap between match and this line
+                highlight_start = max(match_start, line_start_abs)
+                highlight_end = min(match_end, line_end_abs)
+                
+                if highlight_start < highlight_end:
+                    for abs_pos in range(highlight_start, highlight_end):
+                        j = abs_pos - line_start_abs
+                        group_index = j // GROUP_SIZE
+                
+                        # Hex highlight
+                        hex_x = (
+                            2
+                            + 10
+                            + j * 3
+                            + group_index * GROUP_GAP
+                        )
+                        win.addstr(
+                            hex_y + i,
+                            hex_x,
+                            f"{chunk[j]:02X}",
+                            curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD,
+                        )
+                
+                        # ASCII highlight
+                        ascii_x = (
+                            2
+                            + 10
+                            + hex_width
+                            + 3
+                            + j
+                        )
+                        win.addstr(
+                            hex_y + i,
+                            ascii_x,
+                            ascii_part[j],
+                            curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD,
+                        )
+    
+            # ---------- Status ----------
+            status = f"n/p navigate | ↑↓ scroll | q close  ({idx + 1}/{total})"
+            win.addstr(
+                modal_h - 2,
+                2,
+                status[:modal_w - 4],
+                curses.A_BOLD | curses.color_pair(COLOR_STATUS),
+            )
+    
             win.refresh()
-
-            k = win.getch()
-            if k in [ord("q"),27]:
+    
+            # ---------- Input ----------
+            key = win.getch()
+    
+            if key in (ord("q"), 27):
                 break
-            elif k==curses.KEY_UP:
-                view_offset = max(0,view_offset-bytes_per_line)
-            elif k==curses.KEY_DOWN:
-                view_offset = min(len(data)-bytes_per_line,view_offset+bytes_per_line)
+    
+            elif key == curses.KEY_UP:
+                view_offset = max(0, view_offset - BYTES_PER_LINE)
+    
+            elif key == curses.KEY_DOWN:
+                view_offset = min(
+                    max(0, len(data) - BYTES_PER_LINE),
+                    view_offset + BYTES_PER_LINE,
+                )
+    
+            elif key == ord("n"):
+                if idx < total - 1:
+                    idx += 1
+                    offset = hits[idx]["context"]["offset"]
+                    view_offset = max(
+                        0, offset - (HEX_LINES // 2) * BYTES_PER_LINE
+                    )
+    
+            elif key == ord("p"):
+                if idx > 0:
+                    idx -= 1
+                    offset = hits[idx]["context"]["offset"]
+                    view_offset = max(
+                        0, offset - (HEX_LINES // 2) * BYTES_PER_LINE
+                    )
 
     # ---------------- HELP -----------------
     def show_help(self):
@@ -469,7 +597,6 @@ class HexwalkTUI:
         h, w = self.stdscr.getmaxyx()
     
         # ---------- Layout constants ----------
-        CAT_W = 18
         HITS_MIN_W = 10
         DETAILS_MIN_W = 50
         SEP_CHAR = curses.ACS_VLINE
@@ -717,7 +844,7 @@ class HexwalkTUI:
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
             elif key in [10,13]:
-                if hits: self.show_hit_modal(hits[self.hit_i])
+                if hits: self.show_hit_modal(hits, self.hit_i)
 
 # ---------------- MAIN -----------------
 def main():
