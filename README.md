@@ -62,6 +62,7 @@ This installs:
 To uninstall:
 ```bash
 make uninstall
+```
 
 ### Usage
 Basic usage:
