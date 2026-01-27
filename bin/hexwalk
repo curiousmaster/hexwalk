@@ -553,7 +553,7 @@ class HexwalkTUI:
                         )
     
             # ---------- Status ----------
-            status = f"n/p navigate | ↑↓ scroll | q close  ({idx + 1}/{total})"
+            status = f"<- -> navigate | ↑↓ scroll | q close  ({idx + 1}/{total})"
             win.addstr(
                 modal_h - 2,
                 2,
@@ -578,7 +578,7 @@ class HexwalkTUI:
                     view_offset + BYTES_PER_LINE,
                 )
     
-            elif key == ord("n"):
+            elif key == curses.KEY_RIGHT:
                 if idx < total - 1:
                     idx += 1
                     offset = hits[idx]["context"]["offset"]
@@ -586,7 +586,7 @@ class HexwalkTUI:
                         0, offset - (HEX_LINES // 2) * BYTES_PER_LINE
                     )
     
-            elif key == ord("p"):
+            elif key == curses.KEY_LEFT:
                 if idx > 0:
                     idx -= 1
                     offset = hits[idx]["context"]["offset"]
