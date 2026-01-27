@@ -946,7 +946,7 @@ def main():
         print("No matches found.")
         sys.exit(0)
 
-    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr, matches, binary))
+    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr, matches, binary, file_path))
 
 if __name__=="__main__":
     main()
