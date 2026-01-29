@@ -895,7 +895,7 @@ class HexwalkTUI:
         
             else:  # keyword
                 label = f"    {node['count']:>4} {node['name']}"
-                attr = curses.color_pair(COLOR_CAT) | curses.A_DIM
+                attr = curses.color_pair(COLOR_CAT) | curses.A_ITALIC
         
             if i == self.cat_i and self.pane == 0:
                 attr |= curses.A_REVERSE
