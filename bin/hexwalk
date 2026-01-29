@@ -73,6 +73,7 @@ COLOR_CAT = 1
 COLOR_HIT = 2
 COLOR_HIGHLIGHT = 3
 COLOR_STATUS = 4
+COLOR_HEADER = 5
 
 COLOR_CAT_COL1 = curses.COLOR_CYAN
 COLOR_CAT_COL2 = -1
@@ -80,8 +81,10 @@ COLOR_HIT_COL1 = curses.COLOR_YELLOW
 COLOR_HIT_COL2 = -1
 COLOR_HIGHLIGHT_COL1 = curses.COLOR_BLACK
 COLOR_HIGHLIGHT_COL2 = curses.COLOR_GREEN
-COLOR_STATUS_COL1 = curses.COLOR_BLACK
-COLOR_STATUS_COL2 = curses.COLOR_CYAN
+COLOR_STATUS_COL1 = curses.COLOR_WHITE
+COLOR_STATUS_COL2 = curses.COLOR_BLUE
+COLOR_HEADER_COL1 = curses.COLOR_WHITE
+COLOR_HEADER_COL2 = curses.COLOR_BLUE
 
 
 CAT_W = 32
@@ -172,41 +175,79 @@ def hex_to_bin(file_path):
 # ---------------- KEYWORDS -----------------
 def load_keywords(data_dir):
     findings = {}
+
     for fname in os.listdir(data_dir):
-        path = os.path.join(data_dir,fname)
-        if os.path.isfile(path):
-            keywords = [l.strip() for l in open(path,"r") if l.strip()]
-            findings[fname] = [{"pattern":k} for k in keywords]
+        path = os.path.join(data_dir, fname)
+        if not os.path.isfile(path):
+            continue
+
+        rules = []
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                if line.startswith("regex:"):
+                    rules.append({
+                        "type": "regex",
+                        "pattern": line[len("regex:"):],
+                        "raw": line,
+                    })
+                else:
+                    rules.append({
+                        "type": "plain",
+                        "pattern": line,
+                        "raw": line,
+                    })
+
+        findings[fname] = rules
+
     return findings
 
 # ---------------- SEARCH -----------------
 def search_keywords(binary, findings):
     results = {}
-    for cat, kws in findings.items():
+    text = binary.decode("latin1", errors="ignore")
+
+    for cat, rules in findings.items():
         cat_hits = []
-        for k in kws:
+
+        for rule in rules:
             try:
-                pat = re.compile(re.escape(k["pattern"]))
-            except:
+                if rule["type"] == "regex":
+                    pat = re.compile(rule["pattern"])
+                else:
+                    pat = re.compile(re.escape(rule["pattern"]))
+            except re.error:
                 continue
-            for m in pat.finditer(binary.decode("latin1",errors="ignore")):
+
+            for m in pat.finditer(text):
                 s = m.group()
                 off = m.start()
-                start_context = max(0, off-32)
-                end_context = min(len(binary), off+len(s)+32)
+
+                start_context = max(0, off - 32)
+                end_context = min(len(binary), off + len(s) + 32)
                 context_bytes = binary[start_context:end_context]
-                context_ascii = "".join(chr(b) if 32 <= b <= 126 else "." for b in context_bytes)
-                # Highlight the keyword in context for Hits pane
-                context_display = context_ascii
+                context_ascii = "".join(
+                    chr(b) if 32 <= b <= 126 else "."
+                    for b in context_bytes
+                )
+
                 cat_hits.append({
-                    "string": context_display,
-                    "match_key": k["pattern"],
+                    "string": context_ascii,
+                    "match_key": rule["raw"],
                     "match_span": m.span(),
-                    "match_type": "plain",
-                    "context": {"offset": off, "bytes": context_bytes}
+                    "match_type": rule["type"],
+                    "context": {
+                        "offset": off,
+                        "bytes": context_bytes,
+                    },
                 })
+
         if cat_hits:
             results[cat] = cat_hits
+
     return results
 
 # ---------------- OD STYLE -----------------
@@ -266,7 +307,8 @@ class HexwalkTUI:
         curses.init_pair(COLOR_CAT, COLOR_CAT_COL1, COLOR_CAT_COL2)
         curses.init_pair(COLOR_HIT, COLOR_HIT_COL1, COLOR_HIT_COL2)
         curses.init_pair(COLOR_HIGHLIGHT, COLOR_HIGHLIGHT_COL1, COLOR_HIGHLIGHT_COL2)
-        curses.init_pair(COLOR_STATUS, COLOR_STATUS_COL1,  COLOR_STATUS_COL2) 
+        curses.init_pair(COLOR_STATUS, COLOR_STATUS_COL1, COLOR_STATUS_COL2) 
+        curses.init_pair(COLOR_HEADER, COLOR_HEADER_COL1, COLOR_HEADER_COL2)
         self.stdscr.keypad(True)
 
     def filtered_hits(self):
@@ -292,6 +334,25 @@ class HexwalkTUI:
         base = re.sub(r"[^A-Za-z0-9._-]", "_", base)
         return base
 
+    # ---------------- HEADERS -----------------
+    def draw_header(self, y, x, width, title):
+        if width <= 0:
+            return
+
+        max_w = self.stdscr.getmaxyx()[1]
+
+        # Prevent writing into last column (curses wrap bug)
+        safe_width = min(width, max_w - x - 1)
+        if safe_width <= 0:
+            return
+
+        self.stdscr.addnstr(
+            y,
+            x,
+            title.ljust(safe_width),
+            safe_width,
+            curses.color_pair(COLOR_HEADER) | curses.A_BOLD
+        )
     # ---------------- SUMMARY -----------------
     def build_summary(self):
         """
@@ -312,7 +373,11 @@ class HexwalkTUI:
             }
     
             for h in hits:
-                kw = h["match_key"]
+                kw = (
+                    h["match_key"][6:]
+                    if h["match_key"].startswith("regex:")
+                    else h["match_key"]
+                )
                 cat_summary["keywords"][kw] = (
                     cat_summary["keywords"].get(kw, 0) + 1
                 )
@@ -495,6 +560,19 @@ class HexwalkTUI:
         INFO_PAD = 2
         STATUS_LINES = 1
         BORDER_LINES = 2
+
+        def hex_col_for_byte(j):
+            """
+            Return column offset (relative to start of hex field)
+            for byte index j, respecting GROUP_SIZE and GROUP_GAP.
+            """
+            group = j // GROUP_SIZE
+            offset_in_group = j % GROUP_SIZE
+
+            return (
+                group * (GROUP_SIZE * 3 + GROUP_GAP + 1) +
+                offset_in_group * 3
+            )
     
         HEX_LINES = (
             modal_h
@@ -599,12 +677,9 @@ class HexwalkTUI:
                         group_index = j // GROUP_SIZE
                 
                         # Hex highlight
-                        hex_x = (
-                            2
-                            + 10
-                            + j * 3
-                            + group_index * GROUP_GAP
-                        )
+                        HEX_START_X = 2 + 10  # offset + two spaces
+                        hex_x = HEX_START_X + hex_col_for_byte(j)
+
                         win.addstr(
                             hex_y + i,
                             hex_x,
@@ -735,6 +810,14 @@ class HexwalkTUI:
     def draw(self):
         self.stdscr.clear()
         h, w = self.stdscr.getmaxyx()
+        if w < 20 or h < 5:
+            self.stdscr.clear()
+            self.stdscr.addstr(0, 0, "Terminal too small")
+            self.stdscr.refresh()
+            return
+
+        if self.pane not in (0, 1):
+            self.pane = 0
 
         self.clamp_category_index()
     
@@ -745,14 +828,14 @@ class HexwalkTUI:
         SEP_PAD = 1  # space on each side of separator
     
         # ---------- Initial widths ----------
-        cat_w = CAT_W
+        cat_w = max(1, CAT_W)
         details_w = self.details_width if self.details_visible else 0
     
         # Categories always start at column 0
         cat_x = 0
     
         # Greedy middle pane
-        hits_w = w - cat_w - details_w - 2 * (1 + SEP_PAD)
+        hits_w = max(1, w - cat_w - details_w - 2 * (1 + SEP_PAD))
     
         # Shrink details if needed
         if self.details_visible and hits_w < HITS_MIN_W:
@@ -760,7 +843,8 @@ class HexwalkTUI:
                 DETAILS_MIN_W,
                 details_w - (HITS_MIN_W - hits_w)
             )
-            hits_w = w - cat_w - details_w - 2 * (1 + SEP_PAD)
+            details_w = max(0, details_w)
+            hits_w = max(1, w - cat_w - details_w - 2 * (1 + SEP_PAD))
     
         # Auto-hide details if still too small
         if hits_w < HITS_MIN_W:
@@ -800,12 +884,7 @@ class HexwalkTUI:
         rows = self.visible_category_rows()
         
         # Header
-        self.stdscr.addstr(
-            0,
-            cat_x,
-            "Categories".ljust(cat_w),
-            curses.A_BOLD | curses.color_pair(COLOR_CAT),
-        )
+        self.draw_header(0, cat_x, cat_w, "Categories")
         
         for i, node in enumerate(rows[:h - 2]):
             if node["type"] == "category":
@@ -831,22 +910,19 @@ class HexwalkTUI:
         # ---------- Hits ----------
         sel = self.current_category_selection()
         
+        sel = self.current_category_selection()
+
         if sel:
             if sel["mode"] == "category":
-                header = f"Hits — {sel['category'].capitalize()}"
+                title = f"Hits — {sel['category'].capitalize()}"
             else:
-                header = (
+                title = (
                     f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
                 )
         else:
-            header = "Hits"
-        
-        self.stdscr.addstr(
-            0,
-            hits_x,
-            header[:hits_w].ljust(hits_w),
-            curses.A_BOLD | curses.color_pair(COLOR_HIT),
-        )
+            title = "Hits"
+
+        self.draw_header(0, hits_x, hits_w, title)
     
         hit_height = h - 2
     
@@ -916,12 +992,7 @@ class HexwalkTUI:
             SAFE_W = max(1, details_w - 2)  # leave 2 columns unused (critical)
         
             # Header
-            self.stdscr.addstr(
-                0,
-                details_x,
-                "Details"[:SAFE_W].ljust(SAFE_W),
-                curses.A_BOLD | curses.color_pair(COLOR_CAT)
-            )
+            self.draw_header(0, details_x, details_w-2, "Details")
         
             if hits:
                 hit = hits[self.hit_i]
@@ -986,7 +1057,11 @@ class HexwalkTUI:
             elif key==curses.KEY_UP:
                 if self.pane==0: self.cat_i=max(0,self.cat_i-1);self.hit_i=0;self.hit_offset=0
                 elif self.pane==1 and hits: self.hit_i=max(0,self.hit_i-1)
-            elif key==9: self.pane=(self.pane+1)%3
+            elif key == 9:  # Tab
+                if self.pane == 0:
+                    self.pane = 1
+                else:
+                    self.pane = 0
             elif key==ord("/"):
                 curses.echo()
                 self.stdscr.addstr(0,0,"Filter: ")
@@ -1009,13 +1084,21 @@ class HexwalkTUI:
                 self.details_width = max(20, self.details_width - 4)
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
-            elif key in (10, 13) and self.pane == 0:
-                rows = self.visible_category_rows()
-                node = rows[self.cat_i]
+            elif key in (10, 13):  # Enter
+                if self.pane == 0:
+                    # Categories pane → expand / collapse
+                    rows = self.visible_category_rows()
+                    if rows:
+                        node = rows[self.cat_i]
+                        if node["type"] == "category":
+                            node["expanded"] = not node["expanded"]
+                            self.clamp_category_index()
 
-                if node["type"] == "category":
-                    node["expanded"] = not node["expanded"]
-                    self.clamp_category_index()
+                elif self.pane == 1:
+                    # Hits pane → open modal
+                    hits = self.filtered_hits()
+                    if hits:
+                        self.show_hit_modal(hits, self.hit_i)
 
 # ---------------- MAIN -----------------
 def main():
