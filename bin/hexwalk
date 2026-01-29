@@ -247,6 +247,8 @@ class HexwalkTUI:
         self.filename = filename
         self.binary = binary
         self.categories = sorted(findings.keys())
+        self.category_tree = self.build_category_tree()
+        self.cat_i = 0
         self.pane = 0
         self.cat_i = 0
         self.hit_i = 0
@@ -268,11 +270,18 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     def filtered_hits(self):
-        hits = self.findings.get(self.categories[self.cat_i],[])
-        if not self.filter_text:
-            return hits
-        ft = self.filter_text.lower()
-        return [h for h in hits if ft in h['string'].lower()]
+        sel = self.current_category_selection()
+        if not sel:
+            return []
+
+        if sel["mode"] == "category":
+            return self.findings.get(sel["category"], [])
+
+        if sel["mode"] == "keyword":
+            return [
+                h for h in self.findings.get(sel["category"], [])
+                if h["match_key"] == sel["keyword"]
+            ]
 
     def safe_basename(self):
         """
@@ -397,6 +406,72 @@ class HexwalkTUI:
                 offset = min(offset + 1, max(0, len(lines) - h + 1))
             elif key == curses.KEY_UP:
                 offset = max(0, offset - 1)
+
+    # ---------------- CATEGORY TREE -----------------
+    def build_category_tree(self):
+        tree = []
+    
+        for cat, hits in sorted(self.findings.items()):
+            keywords = {}
+            for h in hits:
+                k = h["match_key"]
+                keywords[k] = keywords.get(k, 0) + 1
+    
+            children = []
+            for kw, count in sorted(keywords.items()):
+                children.append({
+                    "type": "keyword",
+                    "name": kw,
+                    "count": count,
+                    "parent": cat,
+                })
+    
+            tree.append({
+                "type": "category",
+                "name": cat,
+                "display": cat.capitalize(),
+                "expanded": False,
+                "children": children,
+            })
+    
+        return tree
+
+    def visible_category_rows(self):
+        rows = []
+        for cat in self.category_tree:
+            rows.append(cat)
+            if cat["expanded"]:
+                rows.extend(cat["children"])
+        return rows
+
+    def current_category_selection(self):
+        rows = self.visible_category_rows()
+        if not rows:
+            return None
+
+        node = rows[self.cat_i]
+
+        if node["type"] == "category":
+            return {
+                "mode": "category",
+                "category": node["name"],
+                "keyword": None,
+            }
+
+        if node["type"] == "keyword":
+            return {
+                "mode": "keyword",
+                "category": node["parent"],
+                "keyword": node["name"],
+            }
+
+    def clamp_category_index(self):
+        rows = self.visible_category_rows()
+        if not rows:
+            self.cat_i = 0
+            return
+
+        self.cat_i = max(0, min(self.cat_i, len(rows) - 1))
 
     # ---------------- MODAL -----------------
     def show_hit_modal(self, hits, start_index):
@@ -660,6 +735,8 @@ class HexwalkTUI:
     def draw(self):
         self.stdscr.clear()
         h, w = self.stdscr.getmaxyx()
+
+        self.clamp_category_index()
     
         # ---------- Layout constants ----------
         HITS_MIN_W = 10
@@ -700,6 +777,8 @@ class HexwalkTUI:
     
         # ---------- Compute hits ONCE ----------
         hits = self.filtered_hits()
+        if self.hit_i >= len(hits):
+            self.hit_i = max(0, len(hits) - 1)
     
         # ---------- Clear panes (rows 0..h-2 only) ----------
         for y in range(0, h - 1):
@@ -718,40 +797,55 @@ class HexwalkTUI:
                 self.stdscr.addch(y, sep2_x, SEP_CHAR)
     
         # ---------- Categories ----------
+        rows = self.visible_category_rows()
+        
+        # Header
         self.stdscr.addstr(
             0,
             cat_x,
             "Categories".ljust(cat_w),
-            curses.A_BOLD | curses.color_pair(COLOR_CAT)
+            curses.A_BOLD | curses.color_pair(COLOR_CAT),
         )
-    
-        for i, cat in enumerate(self.categories[:h - 2]):
-            count = self.category_hit_count(cat)
-            cat_name = self.format_category_name(cat)
-            label = f"{count:>4} {cat_name}"
-    
-            attr = (
-                curses.A_REVERSE
-                if self.pane == 0 and i == self.cat_i
-                else curses.color_pair(COLOR_CAT)
-            )
-    
-            if count == 0:
-                attr |= curses.A_DIM
-    
+        
+        for i, node in enumerate(rows[:h - 2]):
+            if node["type"] == "category":
+                arrow = "▾" if node["expanded"] else "▸"
+                count = len(self.findings.get(node["name"], []))
+                label = f"{arrow} {count:>4} {node['display']}"
+                attr = curses.color_pair(COLOR_CAT)
+        
+            else:  # keyword
+                label = f"    {node['count']:>4} {node['name']}"
+                attr = curses.color_pair(COLOR_CAT) | curses.A_DIM
+        
+            if i == self.cat_i and self.pane == 0:
+                attr |= curses.A_REVERSE
+        
             self.stdscr.addstr(
                 i + 1,
                 cat_x,
                 label[:cat_w].ljust(cat_w),
-                attr
+                attr,
             )
     
         # ---------- Hits ----------
+        sel = self.current_category_selection()
+        
+        if sel:
+            if sel["mode"] == "category":
+                header = f"Hits — {sel['category'].capitalize()}"
+            else:
+                header = (
+                    f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
+                )
+        else:
+            header = "Hits"
+        
         self.stdscr.addstr(
             0,
             hits_x,
-            "Hits".ljust(hits_w),
-            curses.A_BOLD | curses.color_pair(COLOR_HIT)
+            header[:hits_w].ljust(hits_w),
+            curses.A_BOLD | curses.color_pair(COLOR_HIT),
         )
     
         hit_height = h - 2
@@ -879,6 +973,13 @@ class HexwalkTUI:
             elif key==ord("h"): self.show_help()
             elif key in [curses.KEY_RIGHT]: self.pane = min(2,self.pane+1)
             elif key in [curses.KEY_LEFT]: self.pane = max(0,self.pane-1)
+            elif key == curses.KEY_DOWN and self.pane == 0:
+                self.cat_i += 1
+                self.clamp_category_index()
+
+            elif key == curses.KEY_UP and self.pane == 0:
+                self.cat_i -= 1
+                self.clamp_category_index()
             elif key==curses.KEY_DOWN:
                 if self.pane==0: self.cat_i=min(len(self.categories)-1,self.cat_i+1);self.hit_i=0;self.hit_offset=0
                 elif self.pane==1 and hits: self.hit_i=min(len(hits)-1,self.hit_i+1)
@@ -908,8 +1009,13 @@ class HexwalkTUI:
                 self.details_width = max(20, self.details_width - 4)
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
-            elif key in [10,13]:
-                if hits: self.show_hit_modal(hits, self.hit_i)
+            elif key in (10, 13) and self.pane == 0:
+                rows = self.visible_category_rows()
+                node = rows[self.cat_i]
+
+                if node["type"] == "category":
+                    node["expanded"] = not node["expanded"]
+                    self.clamp_category_index()
 
 # ---------------- MAIN -----------------
 def main():
