@@ -65,7 +65,7 @@ import curses, os, sys, re, json
 import argparse
 from datetime import datetime
 
-VERSION = "1.0"
+HEXWALK_VERSION = "1.0"
 
 DEFAULT_DATA_DIR = "/usr/local/share/hexwalk"
 
@@ -73,7 +73,8 @@ COLOR_CAT = 1
 COLOR_HIT = 2
 COLOR_HIGHLIGHT = 3
 COLOR_STATUS = 4
-COLOR_HEADER = 5
+COLOR_TOPHEADER = 5
+COLOR_HEADER = 6
 
 COLOR_CAT_COL1 = curses.COLOR_CYAN
 COLOR_CAT_COL2 = -1
@@ -83,8 +84,10 @@ COLOR_HIGHLIGHT_COL1 = curses.COLOR_BLACK
 COLOR_HIGHLIGHT_COL2 = curses.COLOR_GREEN
 COLOR_STATUS_COL1 = curses.COLOR_WHITE
 COLOR_STATUS_COL2 = curses.COLOR_BLUE
+COLOR_TOPHEADER_COL1 = curses.COLOR_WHITE
+COLOR_TOPHEADER_COL2 = curses.COLOR_BLUE
 COLOR_HEADER_COL1 = curses.COLOR_WHITE
-COLOR_HEADER_COL2 = curses.COLOR_BLUE
+COLOR_HEADER_COL2 = curses.COLOR_BLACK
 
 
 CAT_W = 32
@@ -179,7 +182,7 @@ def generate_metadata(file_path, findings):
 
     return {
         "tool": "hexwalk",
-        "version": "1.0",
+        "version": HEXWALK_VERSION,
         "file": os.path.basename(file_path),
         "file_path": os.path.abspath(file_path),
         "file_size": os.path.getsize(file_path),
@@ -377,10 +380,11 @@ def od_bc_view(data, offset, keyword, context=64):
 
 # ---------------- TUI -----------------
 class HexwalkTUI:
-    def __init__(self,stdscr,findings,binary,filename):
+    def __init__(self,stdscr,findings,binary,filename,file_path):
         self.stdscr = stdscr
         self.findings = findings
         self.filename = filename
+        self.file_path = file_path
         self.binary = binary
         self.categories = sorted(findings.keys())
         self.category_tree = self.build_category_tree()
@@ -403,6 +407,7 @@ class HexwalkTUI:
         curses.init_pair(COLOR_HIT, COLOR_HIT_COL1, COLOR_HIT_COL2)
         curses.init_pair(COLOR_HIGHLIGHT, COLOR_HIGHLIGHT_COL1, COLOR_HIGHLIGHT_COL2)
         curses.init_pair(COLOR_STATUS, COLOR_STATUS_COL1, COLOR_STATUS_COL2) 
+        curses.init_pair(COLOR_TOPHEADER, COLOR_TOPHEADER_COL1, COLOR_TOPHEADER_COL2)
         curses.init_pair(COLOR_HEADER, COLOR_HEADER_COL1, COLOR_HEADER_COL2)
         self.stdscr.keypad(True)
 
@@ -430,6 +435,19 @@ class HexwalkTUI:
         return base
 
     # ---------------- HEADERS -----------------
+    def draw_top_header(self, title):
+        h, w = self.stdscr.getmaxyx()
+        if w <= 1:
+            return
+
+        self.stdscr.addnstr(
+            0,
+            0,
+            title.ljust(w),
+            w,
+            curses.color_pair(COLOR_TOPHEADER) | curses.A_BOLD
+        )
+
     def draw_header(self, y, x, width, title):
         if width <= 0:
             return
@@ -915,7 +933,7 @@ class HexwalkTUI:
             self.pane = 0
 
         self.clamp_category_index()
-    
+
         # ---------- Layout constants ----------
         HITS_MIN_W = 10
         DETAILS_MIN_W = 50
@@ -975,11 +993,15 @@ class HexwalkTUI:
             if self.details_visible and sep2_x is not None and sep2_x < w:
                 self.stdscr.addch(y, sep2_x, SEP_CHAR)
     
+        # ---------- Top Header ----------
+        header = f" Hexwalk v{HEXWALK_VERSION}  |  File: {self.file_path}"
+        self.draw_top_header(header)
+    
         # ---------- Categories ----------
         rows = self.visible_category_rows()
         
         # Header
-        self.draw_header(0, cat_x, cat_w, "Categories")
+        self.draw_header(1, cat_x, cat_w, "Categories")
         
         for i, node in enumerate(rows[:h - 2]):
             if node["type"] == "category":
@@ -996,7 +1018,7 @@ class HexwalkTUI:
                 attr |= curses.A_REVERSE
         
             self.stdscr.addstr(
-                i + 1,
+                i + 2,
                 cat_x,
                 label[:cat_w].ljust(cat_w),
                 attr,
@@ -1017,9 +1039,9 @@ class HexwalkTUI:
         else:
             title = "Hits"
 
-        self.draw_header(0, hits_x, hits_w, title)
+        self.draw_header(1, hits_x, hits_w, title)
     
-        hit_height = h - 2
+        hit_height = h - 3
     
         if self.hit_i < self.hit_offset:
             self.hit_offset = self.hit_i
@@ -1055,7 +1077,7 @@ class HexwalkTUI:
             if pos >= 0:
                 # Before keyword
                 self.stdscr.addstr(
-                    i + 1,
+                    i + 2,
                     hits_x,
                     visible[:pos],
                     attr_normal
@@ -1063,7 +1085,7 @@ class HexwalkTUI:
         
                 # Keyword (highlighted)
                 self.stdscr.addstr(
-                    i + 1,
+                    i + 2,
                     hits_x + pos,
                     visible[pos:pos + len(kw)],
                     attr_highlight
@@ -1071,7 +1093,7 @@ class HexwalkTUI:
         
                 # After keyword
                 self.stdscr.addstr(
-                    i + 1,
+                    i + 2,
                     hits_x + pos + len(kw),
                     visible[pos + len(kw):].ljust(hits_w - pos - len(kw) - 1),
                     attr_normal
@@ -1079,7 +1101,7 @@ class HexwalkTUI:
             else:
                 # No keyword visible
                 self.stdscr.addstr(
-                    i + 1,
+                    i + 2,
                     hits_x,
                     visible.ljust(hits_w - 1),
                     attr_normal
@@ -1090,7 +1112,7 @@ class HexwalkTUI:
             SAFE_W = max(1, details_w - 2)  # leave 2 columns unused (critical)
         
             # Header
-            self.draw_header(0, details_x, details_w-2, "Details")
+            self.draw_header(1, details_x, details_w-2, "Details")
         
             if hits:
                 hit = hits[self.hit_i]
@@ -1108,7 +1130,7 @@ class HexwalkTUI:
                     # Hard truncate and pad – no decoration
                     safe_line = line[:SAFE_W]
                     self.stdscr.addstr(
-                        i + 1,
+                        i + 2,
                         details_x,
                         safe_line.ljust(SAFE_W),
                         curses.color_pair(COLOR_CAT)
@@ -1255,7 +1277,7 @@ def main():
 
     # ---------- Interactive TUI ----------
     curses.wrapper(
-        lambda stdscr: HexwalkTUI(stdscr, matches, binary, file_path)
+        lambda stdscr: HexwalkTUI(stdscr, matches, binary, filename, file_path)
     )
 
 if __name__=="__main__":
