@@ -114,6 +114,7 @@ def load_binary(file_path):
     """Load a file as raw binary."""
     with open(file_path,"rb") as f:
         return f.read()
+
 def hex_to_bin(file_path):
     """
     Convert an Intel HEX file to a flat binary image.
@@ -172,6 +173,94 @@ def hex_to_bin(file_path):
 
     return bytes(memory[:max_addr])
 
+# ---------------- EXPORT HELPERS -----------------
+def generate_metadata(file_path, findings):
+    total_hits = sum(len(hits) for hits in findings.values())
+
+    return {
+        "tool": "hexwalk",
+        "version": "1.0",
+        "file": os.path.basename(file_path),
+        "file_path": os.path.abspath(file_path),
+        "file_size": os.path.getsize(file_path),
+        "date": datetime.now().astimezone().isoformat(),
+        "categories": len(findings),
+        "total_hits": total_hits,
+    }
+
+def write_export(findings, filename, file_path):
+    out = f"hexwalk_{filename}_export.json"
+
+    safe_findings = make_findings_json_safe(findings)
+    meta = generate_metadata(file_path, findings)
+
+    export_obj = {
+        "metadata": meta,
+        "findings": safe_findings,
+    }
+
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(export_obj, f, indent=2)
+
+    return out
+
+def write_summary(summary_text, filename):
+    out = f"hexwalk_{filename}_summary.txt"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(summary_text)
+    return out
+
+def generate_summary_text(findings, filename, file_path):
+    meta = generate_metadata(file_path, findings)
+
+    lines = []
+    lines.append("Hexwalk Summary")
+    lines.append("=" * 60)
+    lines.append(f"File        : {meta['file']}")
+    lines.append(f"Path        : {meta['file_path']}")
+    lines.append(f"File size   : {meta['file_size']} bytes")
+    lines.append(f"Date (UTC)  : {meta['date']}")
+    lines.append(f"Categories  : {meta['categories']}")
+    lines.append(f"Total hits  : {meta['total_hits']}")
+    lines.append("=" * 60)
+    lines.append("")
+
+    for cat, hits in sorted(findings.items()):
+        lines.append(f"{cat} ({len(hits)} hits)")
+
+        keywords = {}
+        for h in hits:
+            k = h["match_key"]
+            keywords[k] = keywords.get(k, 0) + 1
+
+        for k, count in sorted(keywords.items(), key=lambda x: -x[1]):
+            lines.append(f"  {k}: {count}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+def make_findings_json_safe(findings):
+    safe = {}
+
+    for cat, hits in findings.items():
+        safe_hits = []
+        for h in hits:
+            safe_hit = h.copy()
+
+            # Fix context
+            ctx = h.get("context", {}).copy()
+            if "bytes" in ctx:
+                ctx["bytes_hex"] = ctx["bytes"].hex()
+                del ctx["bytes"]
+
+            safe_hit["context"] = ctx
+            safe_hits.append(safe_hit)
+
+        safe[cat] = safe_hits
+
+    return safe
+
 # ---------------- KEYWORDS -----------------
 def load_keywords(data_dir):
     findings = {}
@@ -216,9 +305,14 @@ def search_keywords(binary, findings):
         for rule in rules:
             try:
                 if rule["type"] == "regex":
+                    # Regex rules: user controls flags
                     pat = re.compile(rule["pattern"])
                 else:
-                    pat = re.compile(re.escape(rule["pattern"]))
+                    # Plain keywords: case-insensitive
+                    pat = re.compile(
+                        re.escape(rule["pattern"]),
+                        re.IGNORECASE
+                    )
             except re.error:
                 continue
 
@@ -229,6 +323,7 @@ def search_keywords(binary, findings):
                 start_context = max(0, off - 32)
                 end_context = min(len(binary), off + len(s) + 32)
                 context_bytes = binary[start_context:end_context]
+
                 context_ascii = "".join(
                     chr(b) if 32 <= b <= 126 else "."
                     for b in context_bytes
@@ -952,7 +1047,10 @@ class HexwalkTUI:
             visible = text[:hits_w - 1]
         
             # Find keyword position (first occurrence)
-            pos = visible.find(kw)
+            visible_l = visible.lower()
+            kw_l = kw.lower()
+
+            pos = visible_l.find(kw_l)
         
             if pos >= 0:
                 # Before keyword
@@ -1103,39 +1201,62 @@ class HexwalkTUI:
 # ---------------- MAIN -----------------
 def main():
     parser = argparse.ArgumentParser(
-        prog="hexwalk",
-        description="HexWalk – keyword-based binary and firmware analysis tool",
+        description="Hexwalk – binary keyword scanner"
     )
 
     parser.add_argument(
         "file",
-        help="File to analyze (raw binary or Intel HEX)",
+        help="File to analyze (binary or Intel HEX)",
     )
 
     parser.add_argument(
-        "--version",
-        action="version",
-        version=f"hexwalk {VERSION}",
+        "--summary",
+        action="store_true",
+        help="Write summary file and exit (no TUI)",
+    )
+
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Write JSON export file and exit (no TUI)",
     )
 
     args = parser.parse_args()
 
     file_path = args.file
+    filename = os.path.basename(file_path)
 
-    # --- Load binary safely ---
+    # ---------- Load binary ----------
     if is_hex_file(file_path):
         binary = hex_to_bin(file_path)
     else:
         binary = load_binary(file_path)
 
-    findings = load_keywords(DEFAULT_DATA_DIR)
-    matches = search_keywords(binary, findings)
+    findings_def = load_keywords(DEFAULT_DATA_DIR)
+    matches = search_keywords(binary, findings_def)
 
     if not matches:
         print("No matches found.")
         sys.exit(0)
 
-    curses.wrapper(lambda stdscr: HexwalkTUI(stdscr, matches, binary, file_path))
+    # ---------- Non-interactive mode ----------
+    if args.summary or args.export:
+        if args.export:
+            out = write_export(matches, filename, file_path)
+            print(f"Wrote export: {out}")
+
+        if args.summary:
+            # Generate summary text without TUI
+            summary = generate_summary_text(matches, filename, file_path)
+            out = write_summary(summary, filename)
+            print(f"Wrote summary: {out}")
+
+        sys.exit(0)
+
+    # ---------- Interactive TUI ----------
+    curses.wrapper(
+        lambda stdscr: HexwalkTUI(stdscr, matches, binary, file_path)
+    )
 
 if __name__=="__main__":
     main()
