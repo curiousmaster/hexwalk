@@ -445,7 +445,7 @@ class HexwalkTUI:
             0,
             title.ljust(w),
             w,
-            curses.color_pair(COLOR_TOPHEADER) | curses.A_BOLD
+            curses.color_pair(COLOR_TOPHEADER) | curses.A_BOLD | curses.A_DIM
         )
 
     def draw_header(self, y, x, width, title):
@@ -892,8 +892,10 @@ class HexwalkTUI:
 
     # ---------------- CATEGORY NAME -----------------
     def format_category_name(self, name):
-        base = os.path.splitext(name)[0]
-        return base[:1].upper() + base[1:] if base else base
+        base = os.path.splitext(name)[0]   # remove .txt (or any extension)
+        if not base:
+            return name
+        return base[0].upper() + base[1:]
 
     # ---------------- EXPORT -----------------
     def exportable_findings(self):
@@ -1007,7 +1009,7 @@ class HexwalkTUI:
             if node["type"] == "category":
                 arrow = "▾" if node["expanded"] else "▸"
                 count = len(self.findings.get(node["name"], []))
-                label = f"{arrow} {count:>4} {node['display']}"
+                label = f"{arrow} {count:>4} {self.format_category_name(node['display'])}"
                 attr = curses.color_pair(COLOR_CAT)
         
             else:  # keyword
