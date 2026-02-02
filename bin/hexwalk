@@ -389,6 +389,7 @@ class HexwalkTUI:
         self.categories = sorted(findings.keys())
         self.category_tree = self.build_category_tree()
         self.cat_i = 0
+        self.cat_offset = 0
         self.pane = 0
         self.cat_i = 0
         self.hit_i = 0
@@ -930,29 +931,25 @@ class HexwalkTUI:
             self.stdscr.addstr(0, 0, "Terminal too small")
             self.stdscr.refresh()
             return
-
+    
         if self.pane not in (0, 1):
             self.pane = 0
-
+    
         self.clamp_category_index()
-
+    
         # ---------- Layout constants ----------
         HITS_MIN_W = 10
         DETAILS_MIN_W = 50
         SEP_CHAR = curses.ACS_VLINE
-        SEP_PAD = 1  # space on each side of separator
+        SEP_PAD = 1
     
         # ---------- Initial widths ----------
         cat_w = max(1, CAT_W)
         details_w = self.details_width if self.details_visible else 0
     
-        # Categories always start at column 0
         cat_x = 0
-    
-        # Greedy middle pane
         hits_w = max(1, w - cat_w - details_w - 2 * (1 + SEP_PAD))
     
-        # Shrink details if needed
         if self.details_visible and hits_w < HITS_MIN_W:
             details_w = max(
                 DETAILS_MIN_W,
@@ -961,7 +958,6 @@ class HexwalkTUI:
             details_w = max(0, details_w)
             hits_w = max(1, w - cat_w - details_w - 2 * (1 + SEP_PAD))
     
-        # Auto-hide details if still too small
         if hits_w < HITS_MIN_W:
             details_w = 0
             self.details_visible = False
@@ -974,12 +970,12 @@ class HexwalkTUI:
         sep2_x = hits_x + hits_w + SEP_PAD if details_w else None
         details_x = sep2_x + 1 + SEP_PAD if sep2_x is not None else None
     
-        # ---------- Compute hits ONCE ----------
+        # ---------- Compute hits ----------
         hits = self.filtered_hits()
         if self.hit_i >= len(hits):
             self.hit_i = max(0, len(hits) - 1)
     
-        # ---------- Clear panes (rows 0..h-2 only) ----------
+        # ---------- Clear panes ----------
         for y in range(0, h - 1):
             if cat_x + cat_w <= w:
                 self.stdscr.addstr(y, cat_x, " " * cat_w)
@@ -999,48 +995,59 @@ class HexwalkTUI:
         header = f" Hexwalk v{HEXWALK_VERSION}  |  File: {self.file_path}"
         self.draw_top_header(header)
     
-        # ---------- Categories ----------
+        # ==========================================================
+        # Categories (WITH SCROLLING)
+        # ==========================================================
         rows = self.visible_category_rows()
-        
+        cat_height = h - 3  # top header + pane header + status bar
+    
+        # ---- Scroll handling (NEW) ----
+        if self.cat_i < self.cat_offset:
+            self.cat_offset = self.cat_i
+        elif self.cat_i >= self.cat_offset + cat_height:
+            self.cat_offset = self.cat_i - cat_height + 1
+    
         # Header
         self.draw_header(1, cat_x, cat_w, "Categories")
-        
-        for i, node in enumerate(rows[:h - 2]):
+    
+        for row in range(cat_height):
+            idx = self.cat_offset + row
+            if idx >= len(rows):
+                break
+    
+            node = rows[idx]
+    
             if node["type"] == "category":
                 arrow = "▾" if node["expanded"] else "▸"
                 count = len(self.findings.get(node["name"], []))
                 label = f"{arrow} {count:>4} {self.format_category_name(node['display'])}"
-                attr = curses.color_pair(COLOR_CAT)
-        
-            else:  # keyword
+                attr = curses.A_NORMAL | curses.color_pair(COLOR_CAT)
+            else:
                 label = f"    {node['count']:>4} {node['name']}"
-                attr = curses.color_pair(COLOR_CAT) | curses.A_ITALIC
-        
-            if i == self.cat_i and self.pane == 0:
+                attr = curses.A_ITALIC | curses.color_pair(COLOR_CAT)
+    
+            if idx == self.cat_i and self.pane == 0:
                 attr |= curses.A_REVERSE
-        
+    
             self.stdscr.addstr(
-                i + 2,
+                row + 2,
                 cat_x,
                 label[:cat_w].ljust(cat_w),
-                attr,
+                attr
             )
     
-        # ---------- Hits ----------
+        # ==========================================================
+        # Hits (unchanged)
+        # ==========================================================
         sel = self.current_category_selection()
-        
-        sel = self.current_category_selection()
-
         if sel:
             if sel["mode"] == "category":
                 title = f"Hits — {sel['category'].capitalize()}"
             else:
-                title = (
-                    f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
-                )
+                title = f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
         else:
             title = "Hits"
-
+    
         self.draw_header(1, hits_x, hits_w, title)
     
         hit_height = h - 3
@@ -1054,46 +1061,30 @@ class HexwalkTUI:
             idx = self.hit_offset + i
             if idx >= len(hits):
                 break
-        
+    
             hit = hits[idx]
             text = hit["string"]
             kw = hit["match_key"]
-        
+    
             attr_normal = (
                 curses.A_REVERSE
                 if self.pane == 1 and idx == self.hit_i
                 else curses.color_pair(COLOR_HIT)
             )
-        
+    
             attr_highlight = curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
-        
-            # Trim text to pane width
+    
             visible = text[:hits_w - 1]
-        
-            # Find keyword position (first occurrence)
-            visible_l = visible.lower()
-            kw_l = kw.lower()
-
-            pos = visible_l.find(kw_l)
-        
+            pos = visible.lower().find(kw.lower())
+    
             if pos >= 0:
-                # Before keyword
-                self.stdscr.addstr(
-                    i + 2,
-                    hits_x,
-                    visible[:pos],
-                    attr_normal
-                )
-        
-                # Keyword (highlighted)
+                self.stdscr.addstr(i + 2, hits_x, visible[:pos], attr_normal)
                 self.stdscr.addstr(
                     i + 2,
                     hits_x + pos,
                     visible[pos:pos + len(kw)],
                     attr_highlight
                 )
-        
-                # After keyword
                 self.stdscr.addstr(
                     i + 2,
                     hits_x + pos + len(kw),
@@ -1101,46 +1092,42 @@ class HexwalkTUI:
                     attr_normal
                 )
             else:
-                # No keyword visible
                 self.stdscr.addstr(
                     i + 2,
                     hits_x,
                     visible.ljust(hits_w - 1),
                     attr_normal
                 )
-
-        # ---------- Details ----------
+    
+        # ==========================================================
+        # Details (unchanged)
+        # ==========================================================
         if self.details_visible and details_w > 0:
-            SAFE_W = max(1, details_w - 2)  # leave 2 columns unused (critical)
-        
-            # Header
-            self.draw_header(1, details_x, details_w-2, "Details")
-        
+            SAFE_W = max(1, details_w - 2)
+            self.draw_header(1, details_x, details_w - 2, "Details")
+    
             if hits:
                 hit = hits[self.hit_i]
                 offset = hit["context"]["offset"]
-        
-                # IMPORTANT: od_bc_view must NOT inject highlighting
+    
                 od_lines = od_bc_view(
                     self.binary,
                     offset,
                     hit["match_key"],
                     context=32
                 )
-        
+    
                 for i, line in enumerate(od_lines[:h - 2]):
-                    # Hard truncate and pad – no decoration
-                    safe_line = line[:SAFE_W]
                     self.stdscr.addstr(
                         i + 2,
                         details_x,
-                        safe_line.ljust(SAFE_W),
+                        line[:SAFE_W].ljust(SAFE_W),
                         curses.color_pair(COLOR_CAT)
                     )
     
         # ---------- Status bar ----------
         status = (
-            "Tab pane | ↑↓ move | Enter view | / filter | "
+            "Tab pane | ↑↓ move | Enter expand/view | / filter | "
             "d toggle details | [ ] resize | e export | h help | q quit"
         )
     
