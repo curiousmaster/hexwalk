@@ -13,7 +13,6 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 - Interactive terminal user interface (TUI)
 - Hierarchical keyword taxonomy (Domain → Subcategory → Keyword)
 - Keyword definitions stored as plain text files on disk
-- Global keyword deduplication across domains
 - Filterable taxonomy tree with live count updates
 - Supports raw binaries, ELF files, and Intel HEX firmware images
 - Context-aware hit display with hex + ASCII views
@@ -52,7 +51,7 @@ HexWalk uses a **filesystem-based keyword hierarchy**:
 - Each **directory** represents a *domain*
 - Each `.txt` file represents a *subcategory*
 - Each line in a file represents a *keyword*
-- Keywords are deduplicated globally (first occurrence wins)
+- Keywords can be a regex if prepended by *regex:*
 - Comment lines (`#`) and empty lines are ignored
 
 This structure is reflected directly in the TUI tree view.
