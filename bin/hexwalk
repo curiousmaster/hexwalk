@@ -471,6 +471,8 @@ class HexwalkTUI:
         """
     
         tree = []
+        show_all = getattr(self, "show_all", False)
+
     
         # --------------------------------------------------
         # Load keyword filesystem structure
@@ -511,7 +513,7 @@ class HexwalkTUI:
                 domain_total += sub_total
     
                 # ---- hide empty unless show_all ----
-                if sub_total == 0 and not self.show_all:
+                if sub_total == 0 and not show_all:
                     continue
     
                 # keyword counts
@@ -534,7 +536,7 @@ class HexwalkTUI:
                 # keywords from filesystem
                 for kw in fs_domains[domain][subcat]:
                     count = kw_counts.get(kw, 0)
-                    if count == 0 and not self.show_all:
+                    if count == 0 and not show_all:
                         continue
     
                     sub_node["children"].append({
@@ -547,7 +549,7 @@ class HexwalkTUI:
                 domain_children.append(sub_node)
     
             # ---- hide empty domain unless show_all ----
-            if domain_total == 0 and not self.show_all:
+            if domain_total == 0 and not show_all:
                 continue
     
             tree.append({
@@ -776,35 +778,6 @@ class HexwalkTUI:
                 offset = min(offset + 1, max(0, len(lines) - h + 1))
             elif key == curses.KEY_UP:
                 offset = max(0, offset - 1)
-
-    # ---------------- CATEGORY TREE -----------------
-    def build_category_tree(self):
-        tree = []
-    
-        for cat, hits in sorted(self.findings.items()):
-            keywords = {}
-            for h in hits:
-                k = h["match_key"]
-                keywords[k] = keywords.get(k, 0) + 1
-    
-            children = []
-            for kw, count in sorted(keywords.items()):
-                children.append({
-                    "type": "keyword",
-                    "name": kw,
-                    "count": count,
-                    "parent": cat,
-                })
-    
-            tree.append({
-                "type": "category",
-                "name": cat,
-                "display": cat.capitalize(),
-                "expanded": False,
-                "children": children,
-            })
-    
-        return tree
 
     def visible_category_rows(self):
         rows = []
