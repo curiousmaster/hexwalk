@@ -308,8 +308,8 @@ def load_keywords(base_dir: str):
                         continue
 
                     key = line.lower()
-                    if key in seen:
-                        continue
+#                    if key in seen:
+#                        continue
 
                     seen.add(key)
 
@@ -1354,180 +1354,145 @@ class HexwalkTUI:
         while True:
             self.draw()
             key = self.stdscr.getch()
-            hits = self.filtered_hits()
-            hit_height = self.stdscr.getmaxyx()[0]-2
-
-            if key==ord("q"): break
-            elif key==ord("h"): self.show_help()
-            elif key == curses.KEY_DOWN and self.pane == 0:
-                self.cat_i += 1
-                self.clamp_category_index()
-
-            elif key == curses.KEY_UP and self.pane == 0:
-                self.cat_i -= 1
-                self.clamp_category_index()
-            elif key==curses.KEY_DOWN:
-                if self.pane==0: self.cat_i=min(len(self.categories)-1,self.cat_i+1);self.hit_i=0;self.hit_offset=0
-                elif self.pane==1 and hits: self.hit_i=min(len(hits)-1,self.hit_i+1)
-            elif key==curses.KEY_UP:
-                if self.pane==0: self.cat_i=max(0,self.cat_i-1);self.hit_i=0;self.hit_offset=0
-                elif self.pane==1 and hits: self.hit_i=max(0,self.hit_i-1)
-            elif key == 9:  # Tab
-                self.pane = (self.pane + 1) % 2
+    
+            # ==================================================
+            # GLOBAL ACTIONS
+            # ==================================================
+            if key == ord("q"):
+                break
+    
+            elif key == ord("h"):
+                self.show_help()
+    
+            # ==================================================
+            # ENTER — ACTIVATE / TOGGLE (MUST BE EARLY)
+            # ==================================================
+            elif key in (10, 13, curses.KEY_ENTER):
+                if self.pane == 0:
+                    rows = self.visible_category_rows()
+                    if not rows:
+                        continue
+    
+                    node = rows[self.cat_i]
+    
+                    # ---- Domain / Subcategory toggle ----
+                    if node["type"] in ("domain", "subcategory"):
+                        node["expanded"] = not node["expanded"]
+    
+                        # restore keyword position when expanding subcategory
+                        if node["expanded"] and node["type"] == "subcategory":
+                            key_id = f"{node['parent']}/{node['name']}"
+                            if key_id in self.subcategory_keyword_state:
+                                self.cat_i = self.subcategory_keyword_state[key_id]
+    
+                    # ---- Keyword → collapse back to subcategory ----
+                    elif node["type"] == "keyword":
+                        parent_cat = node["parent"]
+                        domain, subcat = parent_cat.split("/", 1)
+    
+                        # remember keyword cursor position
+                        self.subcategory_keyword_state[parent_cat] = self.cat_i
+    
+                        # collapse subcategory
+                        for n in rows:
+                            if (
+                                n["type"] == "subcategory"
+                                and n["parent"] == domain
+                                and n["name"] == subcat
+                            ):
+                                n["expanded"] = False
+                                break
+    
+                        # jump cursor to subcategory
+                        idx = self.find_subcategory_row_index(domain, subcat)
+                        if idx is not None:
+                            self.cat_i = idx
+    
+                    self.clamp_category_index()
+                    self.clamp_category_scroll()
+    
+                elif self.pane == 1:
+                    hits = self.filtered_hits()
+                    if hits:
+                        self.show_hit_modal(hits, self.hit_i)
+    
+            # ==================================================
+            # TAB — SWITCH PANE
+            # ==================================================
+            elif key == 9:  # TAB
+                self.pane = 1 if self.pane == 0 else 0
+    
+            # ==================================================
+            # NAVIGATION
+            # ==================================================
+            elif key == curses.KEY_DOWN:
+                if self.pane == 0:
+                    self.cat_i += 1
+                    self.clamp_category_index()
+                elif self.pane == 1:
+                    hits = self.filtered_hits()
+                    if hits:
+                        self.hit_i = min(self.hit_i + 1, len(hits) - 1)
+    
+            elif key == curses.KEY_UP:
+                if self.pane == 0:
+                    self.cat_i -= 1
+                    self.clamp_category_index()
+                elif self.pane == 1:
+                    hits = self.filtered_hits()
+                    if hits:
+                        self.hit_i = max(self.hit_i - 1, 0)
+    
+            # ==================================================
+            # FILTER
+            # ==================================================
             elif key == ord("/"):
                 curses.echo()
-                h, w = self.stdscr.getmaxyx()
-                self.stdscr.addstr(h - 1, 0, "Search keywords: ")
-                self.stdscr.clrtoeol()
-
-                s = self.stdscr.getstr().decode("utf-8", errors="ignore").strip()
+                self.stdscr.addstr(0, 0, "Filter: ")
+                self.tree_filter = self.stdscr.getstr().decode().strip()
                 curses.noecho()
-
-                if s:
-                    self.tree_filter = s.lower()
-                else:
-                    self.tree_filter = None
-
+    
                 # rebuild tree with filter applied
                 self.category_tree = self.build_domain_tree()
                 self.cat_i = 0
                 self.cat_offset = 0
-            elif key==ord("e"):
-                fname = f"hexwalk_{self.safe_basename()}_export.json"
-                with open(fname,"w") as f:
-                    json.dump(self.exportable_findings(),f,indent=2)
-                h,w=self.stdscr.getmaxyx()
-                self.stdscr.addstr(h-2,0,"Exported current findings to hexwalk_export.json",curses.A_BOLD)
-                self.stdscr.refresh()
-                curses.napms(1000)
+                self.hit_i = 0
+                self.hit_offset = 0
+    
+            # ==================================================
+            # SUMMARY / EXPORT
+            # ==================================================
             elif key == ord("s"):
                 self.show_summary()
+    
+            elif key == ord("e"):
+                fname = f"hexwalk_{self.safe_basename()}_export.json"
+                with open(fname, "w") as f:
+                    json.dump(self.exportable_findings(), f, indent=2)
+    
+                h, w = self.stdscr.getmaxyx()
+                msg = f"Exported to {fname}"
+                self.stdscr.addstr(
+                    h - 2,
+                    0,
+                    msg[:w - 1],
+                    curses.A_BOLD | curses.color_pair(COLOR_STATUS),
+                )
+                self.stdscr.refresh()
+                curses.napms(800)
+    
+            # ==================================================
+            # DETAILS PANE TOGGLES
+            # ==================================================
             elif key == ord("d"):
                 self.details_visible = not self.details_visible
+    
             elif key == ord("["):
                 self.details_width = max(20, self.details_width - 4)
+    
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
-            elif self.pane == 0:
-            
-                rows = self.visible_category_rows()
-                if not rows:
-                    continue
-            
-                node = rows[self.cat_i]
-            
-                # ---------- MOVE ----------
-                if key == curses.KEY_DOWN:
-                    self.cat_i += 1
-                    self.clamp_category_index()
-            
-                elif key == curses.KEY_UP:
-                    self.cat_i -= 1
-                    self.clamp_category_index()
-            
-                # ---------- EXPAND (RIGHT) ----------
-                elif key == curses.KEY_RIGHT:
-            
-                    # RIGHT = expand only, never collapse, never go up
-                    if node["type"] == "domain":
-                        if not node["expanded"]:
-                            node["expanded"] = True
-            
-                    elif node["type"] == "subcategory":
-                        if not node["expanded"]:
-                            node["expanded"] = True
-            
-                            # restore keyword cursor if known
-                            key_id = f"{node['parent']}/{node['name']}"
-                            if key_id in self.subcategory_keyword_state:
-                                self.cat_i = self.subcategory_keyword_state[key_id]
-            
-                    # keyword → NO-OP on RIGHT
-            
-                    self.clamp_category_index()
-            
-                # ---------- COLLAPSE (LEFT) ----------
-                elif key == curses.KEY_LEFT:
-                
-                    # ---------- KEYWORD → go up to subcategory ----------
-                    if node["type"] == "keyword":
-                        parent_cat = node["parent"]  # domain/subcategory
-                        domain, subcat = parent_cat.split("/", 1)
-                
-                        # remember keyword position
-                        self.subcategory_keyword_state[parent_cat] = self.cat_i
-                
-                        # collapse subcategory
-                        for n in rows:
-                            if (
-                                n["type"] == "subcategory"
-                                and n["parent"] == domain
-                                and n["name"] == subcat
-                            ):
-                                n["expanded"] = False
-                                break
-                
-                        # move to subcategory
-                        idx = self.find_subcategory_row_index(domain, subcat)
-                        if idx is not None:
-                            self.cat_i = idx
-                
-                    # ---------- SUBCATEGORY → go up to domain ----------
-                    elif node["type"] == "subcategory":
-                        domain = node["parent"]
-                        subcat = node["name"]
-                
-                        # remember subcategory position
-                        self.domain_subcategory_state[domain] = self.cat_i
-                
-                        # collapse subcategory
-                        node["expanded"] = False
-                
-                        # move to domain
-                        rows = self.visible_category_rows()
-                        for i, n in enumerate(rows):
-                            if n["type"] == "domain" and n["name"] == domain:
-                                self.cat_i = i
-                                break
-                
-                    # ---------- DOMAIN → collapse ----------
-                    elif node["type"] == "domain":
-                        node["expanded"] = False
-                
-                    self.clamp_category_index()
-            
-                # ---------- TOGGLE (ENTER) ----------
-                elif key in (10, 13):
-            
-                    if node["type"] in ("domain", "subcategory"):
-                        node["expanded"] = not node["expanded"]
-            
-                        if node["expanded"] and node["type"] == "subcategory":
-                            key_id = f"{node['parent']}/{node['name']}"
-                            if key_id in self.subcategory_keyword_state:
-                               self.cat_i = self.subcategory_keyword_state[key_id]
-            
-                    elif node["type"] == "keyword":
-                        parent_cat = node["parent"]
-                        domain, subcat = parent_cat.split("/", 1)
-            
-                        self.subcategory_keyword_state[parent_cat] = self.cat_i
-                        for n in rows:
-                            if (
-                                n["type"] == "subcategory"
-                                and n["parent"] == domain
-                                and n["name"] == subcat
-                            ):
-                                n["expanded"] = False
-                                break
-            
-                        idx = self.find_subcategory_row_index(domain, subcat)
-                        if idx is not None:
-                            self.cat_i = idx
-            
-                    self.clamp_category_index()
-                    self.clamp_category_scroll()
-
+    
 # ---------------- MAIN -----------------
 def main():
     parser = argparse.ArgumentParser(
