@@ -62,7 +62,6 @@
 #
 # ===================================================
 import curses, os, sys, re, json
-import re
 import argparse
 from pathlib import Path
 from datetime import datetime
