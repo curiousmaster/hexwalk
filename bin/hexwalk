@@ -406,13 +406,15 @@ def od_bc_view(data, offset, keyword, context=64):
 
 # ---------------- TUI -----------------
 class HexwalkTUI:
-    def __init__(self,stdscr,findings,binary,filename,file_path,show_all=False):
+    def __init__(self,stdscr,findings,binary,filename,file_path,keywords,show_all=False):
+        self.keywords = keywords
         self.show_all = show_all
         self.stdscr = stdscr
         self.findings = findings
         self.filename = filename
         self.file_path = file_path
         self.binary = binary
+        self.tree_filter = None
         self.categories = sorted(findings.keys())
         self.category_tree = self.build_domain_tree()
         self.cat_i = 0
@@ -442,6 +444,17 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
+    def format_top_header(self):
+        parts = [
+            f"Hexwalk v{HEXWALK_VERSION}",
+            f"File: {self.file_path}",
+        ]
+
+        if self.tree_filter:
+            parts.append(f"Filter: {self.tree_filter}")
+
+        return " | ".join(parts)
+
     def find_subcategory_row_index(self, domain, subcat):
         """
         Find the row index of a given subcategory in the visible tree.
@@ -460,96 +473,91 @@ class HexwalkTUI:
 
     def build_domain_tree(self):
         """
-        Build a hierarchical tree with aggregated hit counts.
+        Build a hierarchical tree with FILTER-AWARE counts.
     
-        If self.show_all is True:
-          - Include all domains/subcategories/keywords from filesystem
-          - Counts may be zero
-    
-        Otherwise:
-          - Hide empty subcategories and domains
+        Rules:
+        - Keyword filter (/) is applied FIRST
+        - Subcategory count = sum of VISIBLE keyword hit counts
+        - Domain count = sum of VISIBLE subcategory counts
+        - Empty branches hidden unless --show-all
         """
     
         tree = []
-        show_all = getattr(self, "show_all", False)
-
+        tree_filter = self.tree_filter.lower() if self.tree_filter else None
     
         # --------------------------------------------------
-        # Load keyword filesystem structure
+        # Group keywords (single source of truth)
         # --------------------------------------------------
-        keyword_root = Path(KEYWORD_DIR)
-    
-        fs_domains = defaultdict(lambda: defaultdict(list))
-    
-        for domain_dir in sorted(p for p in keyword_root.iterdir() if p.is_dir()):
-            domain = domain_dir.name
-            for txt in sorted(domain_dir.glob("*.txt")):
-                subcat = txt.stem
-                with txt.open(encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            fs_domains[domain][subcat].append(line)
+        grouped_keywords = defaultdict(lambda: defaultdict(list))
+        for kw in self.keywords:
+            grouped_keywords[kw["domain"]][kw["subcategory"]].append(kw["value"])
     
         # --------------------------------------------------
-        # Group actual findings
+        # Group hits
         # --------------------------------------------------
         hit_map = defaultdict(lambda: defaultdict(list))
-    
-        for full_cat, hits in self.findings.items():
-            domain, subcat = full_cat.split("/", 1)
+        for cat, hits in self.findings.items():
+            domain, subcat = cat.split("/", 1)
             hit_map[domain][subcat].extend(hits)
     
         # --------------------------------------------------
         # Build tree
         # --------------------------------------------------
-        for domain in sorted(fs_domains.keys()):
+        for domain in sorted(grouped_keywords):
             domain_children = []
-            domain_total = 0
+            domain_count = 0
     
-            for subcat in sorted(fs_domains[domain].keys()):
+            for subcat in sorted(grouped_keywords[domain]):
+                keywords = grouped_keywords[domain][subcat]
                 hits = hit_map[domain].get(subcat, [])
-                sub_total = len(hits)
-                domain_total += sub_total
     
-                # ---- hide empty unless show_all ----
-                if sub_total == 0 and not show_all:
-                    continue
-    
-                # keyword counts
-                kw_counts = {}
+                # count hits per keyword
+                kw_counts = defaultdict(int)
                 for h in hits:
-                    k = h["match_key"]
-                    kw_counts[k] = kw_counts.get(k, 0) + 1
+                    kw_counts[h["match_key"]] += 1
     
-                sub_node = {
-                    "type": "subcategory",
-                    "name": subcat,
-                    "display": subcat.replace("_", " ").capitalize(),
-                    "expanded": False,
-                    "parent": domain,
-                    "children": [],
-                    "hits": hits,
-                    "count": sub_total,
-                }
+                children = []
+                subcat_count = 0
     
-                # keywords from filesystem
-                for kw in fs_domains[domain][subcat]:
-                    count = kw_counts.get(kw, 0)
-                    if count == 0 and not show_all:
+                for kw in keywords:
+                    kw_norm = kw.lower()
+    
+                    # apply keyword filter
+                    if tree_filter and tree_filter not in kw_norm:
                         continue
     
-                    sub_node["children"].append({
+                    count = kw_counts.get(kw, 0)
+    
+                    if count == 0 and not self.show_all:
+                        continue
+    
+                    children.append({
                         "type": "keyword",
                         "name": kw,
                         "count": count,
                         "parent": f"{domain}/{subcat}",
                     })
     
-                domain_children.append(sub_node)
+                    subcat_count += count
     
-            # ---- hide empty domain unless show_all ----
-            if domain_total == 0 and not show_all:
+                # hide empty subcategory unless show_all
+                if not children and not self.show_all:
+                    continue
+    
+                domain_children.append({
+                    "type": "subcategory",
+                    "name": subcat,
+                    "display": subcat.replace("_", " ").capitalize(),
+                    "expanded": False,
+                    "parent": domain,
+                    "children": children,
+                    "count": subcat_count,   # FILTERED COUNT
+                })
+    
+                domain_count += subcat_count
+    
+            # hide empty domain unless show_all
+            if domain_count == 0 and not self.show_all:
                 continue
     
             tree.append({
@@ -558,17 +566,21 @@ class HexwalkTUI:
                 "display": domain.capitalize(),
                 "expanded": False,
                 "children": domain_children,
-                "count": domain_total,
+                "count": domain_count,     # FILTERED COUNT
             })
     
         return tree
 
     def filtered_hits(self):
+        """
+        Return hits based on current tree selection.
+        Domain/Subcategory/Keyword aware.
+        """
         sel = self.current_category_selection()
         if not sel:
             return []
     
-        # ---------------- DOMAIN ----------------
+        # DOMAIN → all hits under domain
         if sel["mode"] == "domain":
             domain = sel["domain"]
             hits = []
@@ -577,11 +589,11 @@ class HexwalkTUI:
                     hits.extend(cat_hits)
             return hits
     
-        # ---------------- SUBCATEGORY ----------------
+        # SUBCATEGORY → all hits in subcategory
         if sel["mode"] == "subcategory":
             return self.findings.get(sel["category"], [])
     
-        # ---------------- KEYWORD ----------------
+        # KEYWORD → only that keyword
         if sel["mode"] == "keyword":
             return [
                 h for h in self.findings.get(sel["category"], [])
@@ -1167,7 +1179,7 @@ class HexwalkTUI:
                 self.stdscr.addch(y, sep2_x, SEP_CHAR)
     
         # ---------- Top Header ----------
-        header = f" Hexwalk v{HEXWALK_VERSION}  |  File: {self.file_path}"
+        header = " " + self.format_top_header()
         self.draw_top_header(header)
     
         # ==========================================================
@@ -1363,12 +1375,24 @@ class HexwalkTUI:
                 elif self.pane==1 and hits: self.hit_i=max(0,self.hit_i-1)
             elif key == 9:  # Tab
                 self.pane = (self.pane + 1) % 2
-            elif key==ord("/"):
+            elif key == ord("/"):
                 curses.echo()
-                self.stdscr.addstr(0,0,"Filter: ")
-                self.filter_text = self.stdscr.getstr().decode()
+                h, w = self.stdscr.getmaxyx()
+                self.stdscr.addstr(h - 1, 0, "Search keywords: ")
+                self.stdscr.clrtoeol()
+
+                s = self.stdscr.getstr().decode("utf-8", errors="ignore").strip()
                 curses.noecho()
-                self.hit_i=0;self.hit_offset=0
+
+                if s:
+                    self.tree_filter = s.lower()
+                else:
+                    self.tree_filter = None
+
+                # rebuild tree with filter applied
+                self.category_tree = self.build_domain_tree()
+                self.cat_i = 0
+                self.cat_offset = 0
             elif key==ord("e"):
                 fname = f"hexwalk_{self.safe_basename()}_export.json"
                 with open(fname,"w") as f:
@@ -1575,6 +1599,7 @@ def main():
             binary,
             filename,
             file_path,
+            keywords,
             show_all=args.show_all
         )
     )
