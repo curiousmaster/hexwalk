@@ -390,8 +390,8 @@ class HexwalkTUI:
         self.category_tree = self.build_category_tree()
         self.cat_i = 0
         self.cat_offset = 0
+        self.category_scroll_state = {}
         self.pane = 0
-        self.cat_i = 0
         self.hit_i = 0
         self.hit_offset = 0
         self.filter_text = ""
@@ -412,6 +412,7 @@ class HexwalkTUI:
         curses.init_pair(COLOR_HEADER, COLOR_HEADER_COL1, COLOR_HEADER_COL2)
         self.stdscr.keypad(True)
 
+    # ---------------- HELPERS -----------------
     def filtered_hits(self):
         sel = self.current_category_selection()
         if not sel:
@@ -434,6 +435,35 @@ class HexwalkTUI:
         # Replace anything non-alphanumeric with underscore
         base = re.sub(r"[^A-Za-z0-9._-]", "_", base)
         return base
+
+    def clamp_category_scroll(self):
+        rows = self.visible_category_rows()
+        if not rows:
+            self.cat_i = 0
+            self.cat_offset = 0
+            return
+
+        self.cat_i = max(0, min(self.cat_i, len(rows) - 1))
+
+        max_offset = max(0, len(rows) - 1)
+        self.cat_offset = max(0, min(self.cat_offset, max_offset))
+
+    def save_category_scroll(self):
+        sel = self.current_category_selection()
+        if not sel or sel["mode"] != "category":
+            return
+
+        key = sel["category"]
+        self.category_scroll_state[key] = (self.cat_i, self.cat_offset)
+
+    def restore_category_scroll(self):
+        sel = self.current_category_selection()
+        if not sel or sel["mode"] != "category":
+            return
+
+        key = sel["category"]
+        if key in self.category_scroll_state:
+            self.cat_i, self.cat_offset = self.category_scroll_state[key]
 
     # ---------------- HEADERS -----------------
     def draw_top_header(self, title):
@@ -935,6 +965,7 @@ class HexwalkTUI:
         if self.pane not in (0, 1):
             self.pane = 0
     
+        self.clamp_category_scroll()
         self.clamp_category_index()
     
         # ---------- Layout constants ----------
@@ -1208,6 +1239,9 @@ class HexwalkTUI:
                     hits = self.filtered_hits()
                     if hits:
                         self.show_hit_modal(hits, self.hit_i)
+
+                self.restore_category_scroll()
+                self.clamp_category_scroll()
 
 # ---------------- MAIN -----------------
 def main():
