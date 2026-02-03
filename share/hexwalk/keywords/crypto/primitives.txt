@@ -1,0 +1,27 @@
+# Plain keywords
+3des
+aes
+bcrypt
+cert
+certificate
+crc
+des
+ecdh
+ecdsa
+hmac
+key
+md5
+pbkdf2
+rsa
+salt
+sha
+sha1
+sha224
+sha256
+sha384
+sha512
+sign
+verify
+# Regex
+regex:-----BEGIN CERTIFICATE-----
+regex:-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----

@@ -1,1 +1,4 @@
 x
+*.old
+*.bak
+*.tgz

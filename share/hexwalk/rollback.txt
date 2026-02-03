@@ -1,4 +1,0 @@
-version
-rollback
-downgrade
-anti

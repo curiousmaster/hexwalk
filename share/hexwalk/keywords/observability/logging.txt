@@ -1,0 +1,8 @@
+# Plain keywords
+audit
+eventlog
+logfile
+logging
+# Common assignment patterns
+regex:debug\s*=\s*(true|false|1|0)
+regex:log(level|file)?\s*=\s*[^\s]+

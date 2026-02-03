@@ -1,0 +1,15 @@
+assert
+bug
+dbg
+debug
+fprintf
+log
+logger
+oops
+panic
+perror
+printf
+syslog
+trace
+verbose
+regex:%[0-9]*[sdx]

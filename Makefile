@@ -1,14 +1,13 @@
-PREFIX ?= /usr/local
-BINDIR  = $(PREFIX)/bin
-SHAREDIR = $(PREFIX)/share/hexwalk
+PREFIX   ?= /usr/local
+BINDIR    = $(PREFIX)/bin
+SHAREDIR  = $(PREFIX)/share/hexwalk
 
-INSTALL = install
-INSTALL_BIN = $(INSTALL) -m 0755
-INSTALL_DATA = $(INSTALL) -m 0644
-MKDIR_P = mkdir -p
+INSTALL       = install
+INSTALL_BIN   = $(INSTALL) -m 0755
+MKDIR_P       = mkdir -p
 
-BIN_SRC = bin/hexwalk
-DATA_SRC = share/hexwalk
+BIN_SRC   = bin/hexwalk
+DATA_SRC  = share/hexwalk
 
 .PHONY: all install uninstall clean
 
@@ -17,11 +16,17 @@ all:
 
 install:
 	@echo "Installing hexwalk to $(PREFIX)..."
+
+	# Create directories
 	$(MKDIR_P) $(BINDIR)
 	$(MKDIR_P) $(SHAREDIR)
 
+	# Install binary
 	$(INSTALL_BIN) $(BIN_SRC) $(BINDIR)/hexwalk
-	$(INSTALL_DATA) $(DATA_SRC)/*.txt $(SHAREDIR)/
+
+	# Install shared data (including keywords tree)
+	@echo "Installing shared data..."
+	cp -r $(DATA_SRC)/* $(SHAREDIR)/
 
 	@echo "Install complete."
 
@@ -29,7 +34,6 @@ uninstall:
 	@echo "Removing hexwalk from $(PREFIX)..."
 	rm -f $(BINDIR)/hexwalk
 	rm -rf $(SHAREDIR)
-
 	@echo "Uninstall complete."
 
 clean:

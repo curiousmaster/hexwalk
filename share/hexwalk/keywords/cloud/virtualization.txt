@@ -1,0 +1,13 @@
+# Plain keywords
+guest
+host
+hypervisor
+kvm
+qemu
+virtio
+virtualbox
+vmware
+xen
+# Common assignment patterns
+regex:virtio[-_]net
+regex:(vm|virt|hypervisor)_\w+\s*=\s*[^\s]+

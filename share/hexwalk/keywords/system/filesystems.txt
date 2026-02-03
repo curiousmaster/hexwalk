@@ -1,0 +1,13 @@
+cramfs
+ext2
+ext3
+ext4
+jffs2
+ntfs
+romfs
+squashfs
+ubifs
+vfat
+yaffs
+regex:hsqs
+regex:ubifs

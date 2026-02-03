@@ -62,12 +62,17 @@
 #
 # ===================================================
 import curses, os, sys, re, json
+import re
 import argparse
+from pathlib import Path
 from datetime import datetime
+from collections import defaultdict
 
 HEXWALK_VERSION = "1.0"
 
-DEFAULT_DATA_DIR = "/usr/local/share/hexwalk"
+KEYWORD_DIR = "/usr/local/share/hexwalk/keywords"
+
+DOMAIN_RE = re.compile(r'^(\d+)_([a-zA-Z0-9_-]+)$')
 
 COLOR_CAT = 1
 COLOR_HIT = 2
@@ -177,6 +182,23 @@ def hex_to_bin(file_path):
     return bytes(memory[:max_addr])
 
 # ---------------- EXPORT HELPERS -----------------
+def keywords_to_findings(keywords):
+    """
+    Convert keyword list into the rule structure expected by search_keywords().
+    """
+    findings = defaultdict(list)
+
+    for kw in keywords:
+        category = f"{kw['domain']}/{kw['subcategory']}"
+
+        findings[category].append({
+            "type": "plain",
+            "pattern": kw["value"],
+            "raw": kw["value"],
+        })
+
+    return dict(findings)
+
 def generate_metadata(file_path, findings):
     total_hits = sum(len(hits) for hits in findings.values())
 
@@ -265,37 +287,41 @@ def make_findings_json_safe(findings):
     return safe
 
 # ---------------- KEYWORDS -----------------
-def load_keywords(data_dir):
-    findings = {}
+def load_keywords(base_dir: str):
+    """
+    Load keywords from keywords/<domain>/<subcategory>.txt
+    Deduplicate globally (first occurrence wins).
+    """
+    base = Path(base_dir)
+    keywords = []
+    seen = set()
 
-    for fname in os.listdir(data_dir):
-        path = os.path.join(data_dir, fname)
-        if not os.path.isfile(path):
-            continue
+    for domain_dir in sorted(p for p in base.iterdir() if p.is_dir()):
+        domain = domain_dir.name
 
-        rules = []
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
+        for file in sorted(domain_dir.glob("*.txt")):
+            subcategory = file.stem
 
-                if line.startswith("regex:"):
-                    rules.append({
-                        "type": "regex",
-                        "pattern": line[len("regex:"):],
-                        "raw": line,
+            with file.open(encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    key = line.lower()
+                    if key in seen:
+                        continue
+
+                    seen.add(key)
+
+                    keywords.append({
+                        "value": line,
+                        "domain": domain,
+                        "subcategory": subcategory,
+                        "source": str(file),
                     })
-                else:
-                    rules.append({
-                        "type": "plain",
-                        "pattern": line,
-                        "raw": line,
-                    })
 
-        findings[fname] = rules
-
-    return findings
+    return keywords
 
 # ---------------- SEARCH -----------------
 def search_keywords(binary, findings):
@@ -387,7 +413,7 @@ class HexwalkTUI:
         self.file_path = file_path
         self.binary = binary
         self.categories = sorted(findings.keys())
-        self.category_tree = self.build_category_tree()
+        self.category_tree = self.build_domain_tree()
         self.cat_i = 0
         self.cat_offset = 0
         self.category_scroll_state = {}
@@ -413,19 +439,121 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
+    from collections import defaultdict
+    
+    def build_domain_tree(self):
+        """
+        Build a hierarchical tree with aggregated hit counts.
+    
+        Structure:
+          Domain (count)
+            └── Subcategory (count)
+                  └── Keyword (count)
+    
+        Empty subcategories and domains are automatically hidden.
+        """
+        tree = []
+    
+        # --------------------------------------------------
+        # Step 1: Group findings by domain / subcategory
+        # --------------------------------------------------
+        grouped = defaultdict(lambda: defaultdict(list))
+    
+        for full_cat, hits in self.findings.items():
+            if "/" in full_cat:
+                domain, subcat = full_cat.split("/", 1)
+            else:
+                domain, subcat = full_cat, "misc"
+    
+            grouped[domain][subcat].extend(hits)
+    
+        # --------------------------------------------------
+        # Step 2: Build tree nodes with aggregated counts
+        # --------------------------------------------------
+        for domain in sorted(grouped.keys()):
+            domain_total = 0
+            domain_children = []
+    
+            for subcat in sorted(grouped[domain].keys()):
+                hits = grouped[domain][subcat]
+                sub_total = len(hits)
+    
+                # ---- Optional polish: hide empty subcategories ----
+                if sub_total == 0:
+                    continue
+    
+                domain_total += sub_total
+    
+                # Count keywords inside subcategory
+                kw_counts = {}
+                for h in hits:
+                    k = h["match_key"]
+                    kw_counts[k] = kw_counts.get(k, 0) + 1
+    
+                sub_node = {
+                    "type": "subcategory",
+                    "name": subcat,
+                    "display": subcat.replace("_", " ").capitalize(),
+                    "expanded": False,
+                    "parent": domain,
+                    "children": [],
+                    "hits": hits,
+                    "count": sub_total,
+                }
+    
+                for kw, count in sorted(kw_counts.items()):
+                    sub_node["children"].append({
+                        "type": "keyword",
+                        "name": kw,
+                        "count": count,
+                        "parent": f"{domain}/{subcat}",
+                    })
+    
+                domain_children.append(sub_node)
+    
+            # ---- Optional polish: hide empty domains ----
+            if domain_total == 0:
+                continue
+    
+            domain_node = {
+                "type": "domain",
+                "name": domain,
+                "display": domain.capitalize(),
+                "expanded": False,
+                "children": domain_children,
+                "count": domain_total,
+            }
+    
+            tree.append(domain_node)
+    
+        return tree
+
     def filtered_hits(self):
         sel = self.current_category_selection()
         if not sel:
             return []
-
-        if sel["mode"] == "category":
+    
+        # ---------------- DOMAIN ----------------
+        if sel["mode"] == "domain":
+            domain = sel["domain"]
+            hits = []
+            for cat, cat_hits in self.findings.items():
+                if cat.startswith(domain + "/"):
+                    hits.extend(cat_hits)
+            return hits
+    
+        # ---------------- SUBCATEGORY ----------------
+        if sel["mode"] == "subcategory":
             return self.findings.get(sel["category"], [])
-
+    
+        # ---------------- KEYWORD ----------------
         if sel["mode"] == "keyword":
             return [
                 h for h in self.findings.get(sel["category"], [])
                 if h["match_key"] == sel["keyword"]
             ]
+    
+        return []
 
     def safe_basename(self):
         """
@@ -647,26 +775,36 @@ class HexwalkTUI:
 
     def visible_category_rows(self):
         rows = []
-        for cat in self.category_tree:
-            rows.append(cat)
-            if cat["expanded"]:
-                rows.extend(cat["children"])
+
+        for domain in self.category_tree:
+            rows.append(domain)
+            if domain["expanded"]:
+                for sub in domain["children"]:
+                    rows.append(sub)
+                    if sub["expanded"]:
+                        rows.extend(sub["children"])
+
         return rows
 
     def current_category_selection(self):
         rows = self.visible_category_rows()
         if not rows:
             return None
-
+    
         node = rows[self.cat_i]
-
-        if node["type"] == "category":
+    
+        if node["type"] == "domain":
             return {
-                "mode": "category",
-                "category": node["name"],
-                "keyword": None,
+                "mode": "domain",
+                "domain": node["name"],
             }
-
+    
+        if node["type"] == "subcategory":
+            return {
+                "mode": "subcategory",
+                "category": f"{node['parent']}/{node['name']}",
+            }
+    
         if node["type"] == "keyword":
             return {
                 "mode": "keyword",
@@ -1002,7 +1140,7 @@ class HexwalkTUI:
         details_x = sep2_x + 1 + SEP_PAD if sep2_x is not None else None
     
         # ---------- Compute hits ----------
-        hits = self.filtered_hits()
+        hits = self.filtered_hits() or []
         if self.hit_i >= len(hits):
             self.hit_i = max(0, len(hits) - 1)
     
@@ -1047,35 +1185,57 @@ class HexwalkTUI:
                 break
     
             node = rows[idx]
-    
-            if node["type"] == "category":
+
+            # ---- default attributes (always defined) ----
+            attr = curses.color_pair(COLOR_CAT)
+            label = ""
+            
+            if node["type"] == "domain":
                 arrow = "▾" if node["expanded"] else "▸"
-                count = len(self.findings.get(node["name"], []))
-                label = f"{arrow} {count:>4} {self.format_category_name(node['display'])}"
-                attr = curses.A_NORMAL | curses.color_pair(COLOR_CAT)
-            else:
-                label = f"    {node['count']:>4} {node['name']}"
-                attr = curses.A_ITALIC | curses.color_pair(COLOR_CAT)
-    
+                label = f"{arrow} [{node['count']:>4}] {node['display']}"
+                attr |= curses.A_BOLD
+            
+            elif node["type"] == "subcategory":
+                arrow = "▾" if node["expanded"] else "▸"
+                label = f"  {arrow} [{node['count']:>4}] {node['display']}"
+            
+            elif node["type"] == "keyword":
+                label = f"      [{node['count']:>4}] {node['name']}"
+                attr |= curses.A_ITALIC
+            
             if idx == self.cat_i and self.pane == 0:
                 attr |= curses.A_REVERSE
-    
+            
+            # ---- selection highlight ----
+            if idx == self.cat_i and self.pane == 0:
+                attr |= curses.A_REVERSE
+            
             self.stdscr.addstr(
                 row + 2,
                 cat_x,
                 label[:cat_w].ljust(cat_w),
                 attr
             )
-    
+
         # ==========================================================
         # Hits (unchanged)
         # ==========================================================
         sel = self.current_category_selection()
-        if sel:
-            if sel["mode"] == "category":
-                title = f"Hits — {sel['category'].capitalize()}"
-            else:
-                title = f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
+
+        if not sel:
+            title = "Hits"
+
+        elif sel["mode"] == "domain":
+            title = f"Hits — {sel['domain'].capitalize()}"
+
+        elif sel["mode"] == "subcategory":
+            title = f"Hits — {sel['category'].capitalize()}"
+
+        elif sel["mode"] == "keyword":
+            title = (
+                f"Hits — {sel['category'].capitalize()} / {sel['keyword']}"
+            )
+
         else:
             title = "Hits"
     
@@ -1228,11 +1388,14 @@ class HexwalkTUI:
                 if self.pane == 0:
                     # Categories pane → expand / collapse
                     rows = self.visible_category_rows()
-                    if rows:
-                        node = rows[self.cat_i]
-                        if node["type"] == "category":
-                            node["expanded"] = not node["expanded"]
-                            self.clamp_category_index()
+                    if not rows:
+                        return
+
+                    node = rows[self.cat_i]
+
+                    if node["type"] in ("domain", "subcategory"):
+                        node["expanded"] = not node["expanded"]
+                        self.clamp_category_index()
 
                 elif self.pane == 1:
                     # Hits pane → open modal
@@ -1277,7 +1440,8 @@ def main():
     else:
         binary = load_binary(file_path)
 
-    findings_def = load_keywords(DEFAULT_DATA_DIR)
+    keywords = load_keywords(KEYWORD_DIR)
+    findings_def = keywords_to_findings(keywords)
     matches = search_keywords(binary, findings_def)
 
     if not matches:

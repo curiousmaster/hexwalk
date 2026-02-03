@@ -1,0 +1,16 @@
+clang
+crt0
+fini_array
+frame_dummy
+gcc
+glibc
+__gnu_mcount_nc
+init_array
+libc
+__libc_start_main
+llvm
+musl
+newlib
+__stack_chk_fail
+__stack_chk_guard
+uclibc

@@ -1,0 +1,15 @@
+# Plain keywords
+container
+containerd
+docker
+image
+k8s
+kubernetes
+namespace
+overlayfs
+pod
+registry
+# Common assignment patterns
+regex:docker(_|-)?image\s*=\s*[^\s]+
+regex:kube(config|let)
+regex:registry\s*=\s*[^\s]+

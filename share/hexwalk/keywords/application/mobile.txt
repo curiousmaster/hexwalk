@@ -1,0 +1,11 @@
+# Plain keywords
+android
+apk
+bundleid
+entitlements
+ios
+ipa
+provisioning
+# Common assignment patterns
+regex:bundle(id)?\s*=\s*[^\s]+
+regex:com\.[a-zA-Z0-9\.]+

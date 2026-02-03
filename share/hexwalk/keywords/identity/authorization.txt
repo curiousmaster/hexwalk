@@ -1,0 +1,18 @@
+# Plain keywords
+acl
+allow
+deny
+permission
+permissions
+# Plain keywords
+privilege
+privileged
+rbac
+role
+roles
+scope
+sudo
+# Common assignment patterns
+regex:allow(ed)?\s*=\s*(true|false|1|0)
+regex:deny\s*=\s*(true|false|1|0)
+regex:(role|permission|scope)\s*=\s*[^\s]+

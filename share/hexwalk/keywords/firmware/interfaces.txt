@@ -1,0 +1,10 @@
+# Plain keywords
+console
+debug port
+gpio
+jtag
+rs232
+serial
+# Common assignment patterns
+regex:/dev/(ttyS|ttyUSB|ttyAMA)[0-9]+
+regex:(uart|spi|i2c)_\w+\s*=\s*[^\s]+

@@ -1,0 +1,14 @@
+default
+deprecated
+error
+example
+fail
+fixme
+note
+sample
+test
+todo
+unsupported
+warning
+regex:build\s*[0-9A-Za-z_\-]+
+regex:v?\d+\.\d+(\.\d+)?

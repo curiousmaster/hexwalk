@@ -1,0 +1,13 @@
+# Plain keywords
+build_id
+checksum
+firmware
+ota
+rollback
+signature
+update
+version
+# Common assignment patterns
+regex:checksum\s*=\s*[A-Fa-f0-9]+
+regex:(firmware|fw)_version\s*=\s*[^\s]+
+regex:update(_|-)?url\s*=\s*[^\s]+
