@@ -27,6 +27,7 @@ install:
 	# Install shared data (including keywords tree)
 	@echo "Installing shared data..."
 	cp -r $(DATA_SRC)/* $(SHAREDIR)/
+	chmod -R ugo+r ${SHAREDIR}
 
 	@echo "Install complete."
 

@@ -417,6 +417,7 @@ class HexwalkTUI:
         self.cat_i = 0
         self.cat_offset = 0
         self.category_scroll_state = {}
+        self.subcategory_keyword_state = {}
         self.pane = 0
         self.hit_i = 0
         self.hit_offset = 0
@@ -439,7 +440,21 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
-    from collections import defaultdict
+    def find_subcategory_row_index(self, domain, subcat):
+        """
+        Find the row index of a given subcategory in the visible tree.
+        """
+        rows = self.visible_category_rows()
+        target = f"{domain}/{subcat}"
+    
+        for i, node in enumerate(rows):
+            if (
+                node["type"] == "subcategory"
+                and node["parent"] == domain
+                and node["name"] == subcat
+            ):
+                return i
+        return None
     
     def build_domain_tree(self):
         """
@@ -1386,23 +1401,59 @@ class HexwalkTUI:
                 self.details_width = min(120, self.details_width + 4)
             elif key in (10, 13):  # Enter
                 if self.pane == 0:
-                    # Categories pane → expand / collapse
                     rows = self.visible_category_rows()
                     if not rows:
                         return
-
+            
                     node = rows[self.cat_i]
-
-                    if node["type"] in ("domain", "subcategory"):
+            
+                    # ---------------- DOMAIN ----------------
+                    if node["type"] == "domain":
                         node["expanded"] = not node["expanded"]
                         self.clamp_category_index()
-
+            
+                    # ---------------- SUBCATEGORY ----------------
+                    elif node["type"] == "subcategory":
+                        node["expanded"] = not node["expanded"]
+            
+                        # Restore keyword position if expanding
+                        if node["expanded"]:
+                            key = f"{node['parent']}/{node['name']}"
+                            if key in self.subcategory_keyword_state:
+                                self.cat_i = self.subcategory_keyword_state[key]
+                        self.clamp_category_index()
+            
+                    # ---------------- KEYWORD ----------------
+                    elif node["type"] == "keyword":
+                        parent_cat = node["parent"]  # "domain/subcategory"
+                        domain, subcat = parent_cat.split("/", 1)
+            
+                        # Save current keyword position
+                        self.subcategory_keyword_state[parent_cat] = self.cat_i
+            
+                        # Collapse the subcategory
+                        rows = self.visible_category_rows()
+                        for n in rows:
+                            if (
+                                n["type"] == "subcategory"
+                                and n["parent"] == domain
+                                and n["name"] == subcat
+                            ):
+                                n["expanded"] = False
+                                break
+            
+                        # Move selection back to subcategory
+                        idx = self.find_subcategory_row_index(domain, subcat)
+                        if idx is not None:
+                            self.cat_i = idx
+            
+                        self.clamp_category_index()
+            
                 elif self.pane == 1:
-                    # Hits pane → open modal
                     hits = self.filtered_hits()
                     if hits:
                         self.show_hit_modal(hits, self.hit_i)
-
+            
                 self.restore_category_scroll()
                 self.clamp_category_scroll()
 
