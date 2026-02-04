@@ -332,21 +332,39 @@ def search_keywords(binary, findings):
 
         for rule in rules:
             try:
-                if rule["type"] == "regex":
-                    # Regex rules: user controls flags
-                    pat = re.compile(rule["pattern"])
+                # ------------------------------------------------
+                # Normalize rule to raw string
+                # ------------------------------------------------
+                if isinstance(rule, dict):
+                    raw = rule.get("raw") or rule.get("pattern")
                 else:
-                    # Plain keywords: case-insensitive
-                    pat = re.compile(
-                        re.escape(rule["pattern"]),
-                        re.IGNORECASE
-                    )
+                    raw = rule
+
+                # ------------------------------------------------
+                # REGEX (filesystem or legacy)
+                # ------------------------------------------------
+                if raw.startswith("regex:"):
+                    pattern = raw[len("regex:"):]
+                    pat = re.compile(pattern)
+                    match_type = "regex"
+                    match_key = raw
+
+                # ------------------------------------------------
+                # PLAIN KEYWORD
+                # ------------------------------------------------
+                else:
+                    pat = re.compile(re.escape(raw), re.IGNORECASE)
+                    match_type = "keyword"
+                    match_key = raw
+
             except re.error:
                 continue
 
+
+
             for m in pat.finditer(text):
-                s = m.group()
                 off = m.start()
+                s = m.group()
 
                 start_context = max(0, off - 32)
                 end_context = min(len(binary), off + len(s) + 32)
@@ -359,9 +377,9 @@ def search_keywords(binary, findings):
 
                 cat_hits.append({
                     "string": context_ascii,
-                    "match_key": rule["raw"],
+                    "match_key": match_key,
                     "match_span": m.span(),
-                    "match_type": rule["type"],
+                    "match_type": match_type,
                     "context": {
                         "offset": off,
                         "bytes": context_bytes,
@@ -372,6 +390,7 @@ def search_keywords(binary, findings):
             results[cat] = cat_hits
 
     return results
+
 
 # ---------------- OD STYLE -----------------
 def od_bc_view(data, offset, keyword, context=64):
