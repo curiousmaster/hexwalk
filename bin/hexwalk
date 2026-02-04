@@ -462,6 +462,25 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
+    def expand_all(self):
+        """Expand all domains and subcategories."""
+        for d in self.category_tree:
+            if d["type"] == "domain":
+                d["expanded"] = True
+                for s in d.get("children", []):
+                    if s["type"] == "subcategory":
+                        s["expanded"] = True
+    
+    
+    def collapse_all(self):
+        """Collapse all domains and subcategories."""
+        for d in self.category_tree:
+            if d["type"] == "domain":
+                d["expanded"] = False
+                for s in d.get("children", []):
+                    if s["type"] == "subcategory":
+                        s["expanded"] = False
+
     def format_top_header(self):
         parts = [
             f"Hexwalk v{HEXWALK_VERSION}",
@@ -879,6 +898,9 @@ class HexwalkTUI:
         STATUS_LINES = 1
         BORDER_LINES = 2
 
+        def align_offset(off):
+            return off - (off % BYTES_PER_LINE)
+
         def hex_col_for_byte(j):
             """
             Return column offset (relative to start of hex field)
@@ -913,7 +935,7 @@ class HexwalkTUI:
     
         # Initial view offset
         offset = hits[idx]["context"]["offset"]
-        view_offset = max(0, offset - (HEX_LINES // 2) * BYTES_PER_LINE)
+        view_offset = align_offset(max(0, offset - (HEX_LINES // 2) * BYTES_PER_LINE))
     
         while True:
             hit = hits[idx]
@@ -1038,54 +1060,134 @@ class HexwalkTUI:
                 break
     
             elif key == curses.KEY_UP:
-                view_offset = max(0, view_offset - BYTES_PER_LINE)
-    
+                view_offset = align_offset( max(0, view_offset - BYTES_PER_LINE) )
+
             elif key == curses.KEY_DOWN:
-                view_offset = min(
-                    max(0, len(data) - BYTES_PER_LINE),
-                    view_offset + BYTES_PER_LINE,
-                )
+                view_offset = align_offset( min( max(0, len(data) - BYTES_PER_LINE), view_offset + BYTES_PER_LINE,) )
     
             elif key == curses.KEY_RIGHT:
                 if idx < total - 1:
                     idx += 1
                     offset = hits[idx]["context"]["offset"]
-                    view_offset = max(
-                        0, offset - (HEX_LINES // 2) * BYTES_PER_LINE
-                    )
+                    view_offset = align_offset(max( 0, offset - (HEX_LINES // 2) * BYTES_PER_LINE) )
     
             elif key == curses.KEY_LEFT:
                 if idx > 0:
                     idx -= 1
                     offset = hits[idx]["context"]["offset"]
-                    view_offset = max(
-                        0, offset - (HEX_LINES // 2) * BYTES_PER_LINE
-                    )
+                    view_offset = align_offset( max( 0, offset - (HEX_LINES // 2) * BYTES_PER_LINE) )
 
     # ---------------- HELP -----------------
     def show_help(self):
-        self.stdscr.clear()
-        h,w = self.stdscr.getmaxyx()
+        h, w = self.stdscr.getmaxyx()
+    
+        # ---------- Modal geometry ----------
+        modal_h = min(37, h - 4)
+        modal_w = min(120, w - 4)
+        modal_y = (h - modal_h) // 2
+        modal_x = (w - modal_w) // 2
+    
+        win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
+        win.keypad(True)
+    
+        # ---------- Help text ----------
         lines = [
-            "Hexwalk TUI Help",
+            "HexWalk — Interactive Binary Analysis",
             "",
-            "Navigation:",
-            "  Arrow Up/Down : Move in pane",
-            "  Tab           : Switch pane (Categories/Hits/Details)",
-            "  Enter         : View hit modal",
-            "  /             : Filter hits",
-            "  e             : Export current findings to hexwalk_<filename>_export.json",
-            "  s             : Show summary",
-            "  h             : Show this help",
-            "  q             : Quit",
+            "Panes:",
+            "  Categories  : Domain / Subcategory / Keyword tree",
+            "  Hits        : Matching contexts for selection",
+            "  Details     : Hex + ASCII view of hit",
             "",
-            "Press any key to return..."
+            "Global Navigation:",
+            "  Tab            : Switch pane (Categories ↔ Hits)",
+            "  Arrow Up/Down  : Move selection in active pane",
+            "",
+            "Tree Navigation (Categories pane):",
+            "  Enter          : Expand / collapse domain or subcategory",
+            "  Enter on key   : Collapse to subcategory (restore position)",
+            "  Right Arrow    : Expand current node",
+            "  Left Arrow     : Collapse current node",
+            "  +              : Expand entire tree",
+            "  -              : Collapse entire tree",
+            "",
+            "Hits & Inspection:",
+            "  Enter          : Open hit inspection modal (Hits pane)",
+            "  Arrow Up/Down  : Navigate between hits",
+            "",
+            "Filtering:",
+            "  /              : Filter keywords globally (tree + counts)",
+            "                   (active filter shown in header)",
+            "",
+            "Actions:",
+            "  s              : Show summary page",
+            "  e              : Export findings to JSON",
+            "  d              : Toggle details pane",
+            "  [ / ]          : Resize details pane",
+            "",
+            "Help & Exit:",
+            "  h              : Show this help",
+            "  q / Esc        : Close help",
         ]
-        for i,line in enumerate(lines):
-            if i>=h-1: break
-            self.stdscr.addstr(i,0,line[:w-1])
-        self.stdscr.refresh()
-        self.stdscr.getch()
+    
+        # ---------- Scrolling ----------
+        offset = 0
+        visible_h = modal_h - 4  # borders + title + status
+    
+        while True:
+            win.clear()
+            win.box()
+    
+            # ---------- Title ----------
+            title = " Help "
+            win.addstr(
+                0,
+                max(2, (modal_w - len(title)) // 2),
+                title,
+                curses.A_BOLD
+            )
+    
+            # ---------- Content ----------
+            for i in range(visible_h):
+                idx = offset + i
+                if idx >= len(lines):
+                    break
+                win.addstr(
+                    1 + i,
+                    2,
+                    lines[idx][: modal_w - 4]
+                )
+    
+            # ---------- Status ----------
+            status = "↑↓ scroll | PgUp/PgDn | q / Esc close"
+            win.addstr(
+                modal_h - 2,
+                2,
+                status[: modal_w - 4],
+                curses.A_BOLD | curses.color_pair(COLOR_STATUS),
+            )
+    
+            win.refresh()
+    
+            key = win.getch()
+    
+            if key in (ord("q"), 27, 10, 13):
+                break
+    
+            elif key == curses.KEY_DOWN:
+                offset = min(offset + 1, max(0, len(lines) - visible_h))
+    
+            elif key == curses.KEY_UP:
+                offset = max(0, offset - 1)
+    
+            elif key == curses.KEY_NPAGE:  # Page Down
+                offset = min(
+                    offset + visible_h,
+                    max(0, len(lines) - visible_h)
+                )
+    
+            elif key == curses.KEY_PPAGE:  # Page Up
+                offset = max(0, offset - visible_h)
 
     # ---------------- HITS COUNT -----------------
     def category_hit_count(self, category):
@@ -1382,6 +1484,21 @@ class HexwalkTUI:
     
             elif key == ord("h"):
                 self.show_help()
+
+            # ==================================================
+            # EXPAND / COLLAPSE ALL
+            # ==================================================
+            elif key == ord("+"):
+                if self.pane == 0:
+                    self.expand_all()
+                    self.clamp_category_index()
+                    self.clamp_category_scroll()
+            
+            elif key == ord("-"):
+                if self.pane == 0:
+                    self.collapse_all()
+                    self.clamp_category_index()
+                    self.clamp_category_scroll()
     
             # ==================================================
             # ENTER — ACTIVATE / TOGGLE (MUST BE EARLY)
