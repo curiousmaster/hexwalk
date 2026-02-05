@@ -100,6 +100,83 @@ HITS_MIN_W = 10
 SEP = 2
 
 # ---------------- HELPERS -----------------
+def get_tree_arrows():
+    """
+    Return safe expand/collapse arrows depending on terminal support.
+    """
+    try:
+        "▸▾".encode(sys.stdout.encoding)
+        return {
+            #"collapsed": "▸",
+            #"expanded":  "▾",
+            "collapsed": ">",
+            "expanded":  "v",
+        }
+    except Exception:
+        return {
+            "collapsed": ">",
+            "expanded":  "v",
+        }
+
+def safe_hline(win, y, x, w, ch):
+    if w <= 0:
+        return
+    try:
+        win.addstr(y, x, ch * w)
+    except curses.error:
+        pass
+
+def draw_box(win, h, w, box):
+    """
+    Safely draw a box using provided characters.
+    Will NOT draw if the window is too small.
+    """
+    # Minimum viable box: 3x3
+    if h < 3 or w < 3:
+        return
+
+    try:
+        # Top
+        win.addstr(0, 0, box["tl"] + box["h"] * (w - 2) + box["tr"])
+
+        # Sides
+        for y in range(1, h - 1):
+            win.addstr(y, 0, box["v"])
+            win.addstr(y, w - 1, box["v"])
+
+        # Bottom
+        win.addstr(h - 1, 0, box["bl"] + box["h"] * (w - 2) + box["br"])
+
+    except curses.error:
+        # Terminal resized or window invalid — ignore safely
+        pass
+
+
+def get_box_chars():
+    """
+    Return safe box-drawing characters depending on terminal support.
+    """
+    try:
+        # If UTF-8 works, use proper box drawing
+        "│".encode(sys.stdout.encoding)
+        return {
+            "v": "│",
+            "h": "─",
+            "tl": "┌",
+            "tr": "┐",
+            "bl": "└",
+            "br": "┘",
+        }
+    except Exception:
+        # Pure ASCII fallback
+        return {
+            "v": "|",
+            "h": "-",
+            "tl": "+",
+            "tr": "+",
+            "bl": "+",
+            "br": "+",
+        }
 
 def draw_progress_modal(stdscr, title, message, progress=None):
     """
@@ -115,7 +192,8 @@ def draw_progress_modal(stdscr, title, message, progress=None):
 
     win = stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
     win.clear()
-    win.box()
+    draw_box(win, modal_h, modal_w, self.box)
+
     win.keypad(False)
 
     # Title
@@ -623,6 +701,8 @@ class HexwalkTUI:
         # ---------- Initialize ----------
         self.stdscr.clear()
         self.stdscr.refresh()
+        self.box = get_box_chars()
+        self.arrows = get_tree_arrows()
 
         # ---------- Findings / tree ----------
         self.findings = {}
@@ -813,7 +893,7 @@ class HexwalkTUI:
         # Create an independent window (IMPORTANT)
         win = curses.newwin(modal_h, modal_w, modal_y, modal_x)
         win.clear()
-        win.box()
+        draw_box(win, modal_h, modal_w, self.box)
     
         # Title
         win.addstr(
@@ -875,7 +955,7 @@ class HexwalkTUI:
         win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
         win.keypad(True)
         win.clear()
-        win.box()
+        draw_box(win, modal_h, modal_w, self.box)
     
         # ---------- Title ----------
         title = " Confirm Quit "
@@ -1383,7 +1463,7 @@ class HexwalkTUI:
             match_len = hit["match_len"]
     
             win.clear()
-            win.box()
+            draw_box(win, modal_h, modal_w, self.box)
     
             # ---------- Info block ----------
             info = [
@@ -1402,7 +1482,7 @@ class HexwalkTUI:
                 )
     
             sep_y = 1 + INFO_LINES
-            win.hline(sep_y, 1, curses.ACS_HLINE, modal_w - 2)
+            safe_hline(win, sep_y, 1, modal_w - 2, self.box["h"])
     
             # ---------- Hex view ----------
             hex_y = sep_y + INFO_PAD
@@ -1576,7 +1656,7 @@ class HexwalkTUI:
     
         while True:
             win.clear()
-            win.box()
+            draw_box(win, modal_h, modal_w, self.box)
     
             # ---------- Title ----------
             title = " Help "
@@ -1687,7 +1767,6 @@ class HexwalkTUI:
         # ---------- Layout constants ----------
         HITS_MIN_W = 10
         DETAILS_MIN_W = 50
-        SEP_CHAR = curses.ACS_VLINE
         SEP_PAD = 1
     
         # ---------- Initial widths ----------
@@ -1734,9 +1813,9 @@ class HexwalkTUI:
         # ---------- Vertical separators ----------
         for y in range(0, h - 1):
             if sep1_x < w:
-                self.stdscr.addch(y, sep1_x, SEP_CHAR)
+                self.stdscr.addch(y, sep1_x, self.box["v"])
             if self.details_visible and sep2_x is not None and sep2_x < w:
-                self.stdscr.addch(y, sep2_x, SEP_CHAR)
+                self.stdscr.addch(y, sep2_x, self.box["v"])
     
         # ---------- Top Header ----------
         header = " " + self.format_top_header()
@@ -1773,12 +1852,22 @@ class HexwalkTUI:
             label = ""
             
             if node["type"] == "domain":
-                arrow = "▾" if node["expanded"] else "▸"
+                arrow = (
+                    self.arrows["expanded"]
+                    if node["expanded"]
+                    else self.arrows["collapsed"]
+                )
+
                 label = f"{arrow} [{node['count']:>{dw}}] {node['display']}"
                 attr |= curses.A_BOLD
             
             elif node["type"] == "subcategory":
-                arrow = "▾" if node["expanded"] else "▸"
+                arrow = (
+                    self.arrows["expanded"]
+                    if node["expanded"]
+                    else self.arrows["collapsed"]
+                )
+
                 label = f"  {arrow} [{node['count']:>{sw}}] {node['display']}"
             
             elif node["type"] == "keyword":
