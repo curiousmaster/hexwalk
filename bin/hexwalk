@@ -100,6 +100,44 @@ HITS_MIN_W = 10
 SEP = 2
 
 # ---------------- HELPERS -----------------
+
+def draw_progress_modal(stdscr, title, message, progress=None):
+    """
+    Draw a centered modal progress window.
+    progress: float between 0.0–1.0 or None
+    """
+    h, w = stdscr.getmaxyx()
+
+    modal_h = 9
+    modal_w = min(60, w - 4)
+    modal_y = (h - modal_h) // 2
+    modal_x = (w - modal_w) // 2
+
+    win = stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
+    win.clear()
+    win.box()
+    win.keypad(False)
+
+    # Title
+    win.addstr(1, 2, title[: modal_w - 4], curses.A_BOLD)
+
+    # Message
+    win.addstr(3, 2, message[: modal_w - 4])
+
+    # Progress bar
+    if progress is not None:
+        bar_w = modal_w - 4
+        filled = int(bar_w * max(0.0, min(1.0, progress)))
+        bar = "█" * filled + " " * (bar_w - filled)
+        win.addstr(5, 2, bar, curses.A_REVERSE)
+
+        pct = f"{int(progress * 100):3d}%"
+        win.addstr(6, modal_w - len(pct) - 2, pct)
+
+    win.refresh()
+    return win
+
+
 def normalize_rules(keywords):
     """
     Convert loaded keywords into normalized rule objects.
@@ -207,90 +245,212 @@ def hex_to_bin(file_path):
 
     return bytes(memory[:max_addr])
 
-# ---------------- EXPORT HELPERS -----------------
+# ---------------- AHO-CORASICK SETUP -----------------
 
-def search_keywords(binary):
+def build_ac_automaton(rules):
     """
-    Optimized search:
-    - One pass for all plain keywords
-    - One pass per regex rule (compiled once)
+    Build an Aho–Corasick automaton for plain keyword rules.
     """
-    text = binary.decode("latin1", errors="ignore")
-    text_lower = text.lower()
+    try:
+        import ahocorasick
+    except ImportError:
+        raise RuntimeError(
+            "pyahocorasick is required for optimized scanning. "
+            "Install with: pip install pyahocorasick"
+        )
+
+    automaton = ahocorasick.Automaton()
+
+    for rule in rules:
+        automaton.add_word(
+            rule["pattern"].lower(),
+            rule
+        )
+
+    automaton.make_automaton()
+    return automaton
+
+# ---------------- PLAIN KEYWORD SCAN (AC) -----------------
+
+def scan_plain_ac(binary, plain_rules, progress_cb=None):
+    """
+    Scan binary using Aho–Corasick for plain keywords.
+    """
+    text = binary.decode("latin1", errors="ignore").lower()
+    automaton = build_ac_automaton(plain_rules)
+
+    results = defaultdict(list)
+    total = len(text)
+
+    for idx, (end_pos, rule) in enumerate(automaton.iter(text)):
+        start_pos = end_pos - len(rule["pattern"]) + 1
+
+        ctx_start = max(0, start_pos - 32)
+        ctx_end = min(len(binary), end_pos + 33)
+        ctx_bytes = binary[ctx_start:ctx_end]
+
+        ctx_ascii = "".join(
+            chr(b) if 32 <= b <= 126 else "."
+            for b in ctx_bytes
+        )
+
+        results[rule["category"]].append({
+            "string": ctx_ascii,
+            "match_key": rule["raw"],
+            "match_span": (start_pos, end_pos + 1),
+            "match_type": "plain",
+            "context": {
+                "offset": start_pos,
+                "bytes": ctx_bytes,
+            },
+        })
+
+        # ---- progress update every ~1% ----
+        if progress_cb and idx % 500 == 0:
+            progress_cb(end_pos / total)
+
+    if progress_cb:
+        progress_cb(1.0)
+
+    return results
+
+def search_keywords(binary, progress_cb=None):
+    """
+    Optimized keyword search using Aho–Corasick (plain)
+    and regex scanning.
+
+    progress_cb(phase, progress)
+    """
+    from collections import defaultdict
+    import re
 
     results = defaultdict(list)
 
-    # ---------- Prepare rules ----------
-    rules = normalize_rules(load_keywords(KEYWORD_DIR))
+    # Decode ONCE for AC + regex (binary-safe)
+    text = binary.decode("latin1", errors="ignore")
 
-    plain_rules = [r for r in rules if r["type"] == "plain"]
-    regex_rules = [r for r in rules if r["type"] == "regex"]
+    # -------------------------------------------------
+    # Load keywords
+    # -------------------------------------------------
+    keywords = load_keywords(KEYWORD_DIR)
 
-    # ---------- PLAIN KEYWORDS (single logical pass) ----------
-    for rule in plain_rules:
-        needle = rule["pattern"].lower()
-        start = 0
+    plain_keywords = []
+    regex_rules = []
 
-        while True:
-            pos = text_lower.find(needle, start)
-            if pos == -1:
-                break
+    for kw in keywords:
+        val = kw["value"]
 
-            end = pos + len(needle)
-
-            ctx_start = max(0, pos - 32)
-            ctx_end = min(len(binary), end + 32)
-            ctx_bytes = binary[ctx_start:ctx_end]
-
-            ctx_ascii = "".join(
-                chr(b) if 32 <= b <= 126 else "."
-                for b in ctx_bytes
-            )
-
-            results[rule["category"]].append({
-                "string": ctx_ascii,
-                "match_key": rule["raw"],
-                "match_span": (pos, end),
-                "match_type": "plain",
-                "context": {
-                    "offset": pos,
-                    "bytes": ctx_bytes,
-                },
+        if val.startswith("regex:"):
+            try:
+                regex_rules.append({
+                    "pattern": re.compile(val[6:], re.IGNORECASE),
+                    "domain": kw["domain"],
+                    "subcategory": kw["subcategory"],
+                    "raw": val,
+                })
+            except re.error:
+                continue
+        else:
+            plain_keywords.append({
+                "pattern": val.lower(),   # <-- STRING
+                "domain": kw["domain"],
+                "subcategory": kw["subcategory"],
+                "raw": val,
             })
 
-            start = pos + 1
+    # -------------------------------------------------
+    # Plain keyword scan (Aho–Corasick)
+    # -------------------------------------------------
+    if progress_cb:
+        progress_cb("plain", 0.0)
 
-    # ---------- REGEX RULES ----------
-    for rule in regex_rules:
-        try:
-            pat = re.compile(rule["pattern"])
-        except re.error:
-            continue
+    try:
+        import ahocorasick
+    except ImportError:
+        raise RuntimeError(
+            "pyahocorasick required: pip install pyahocorasick"
+        )
 
-        for m in pat.finditer(text):
-            pos, end = m.span()
+    automaton = ahocorasick.Automaton()
+    for kw in plain_keywords:
+        automaton.add_word(kw["pattern"], kw)
+    automaton.make_automaton()
 
-            ctx_start = max(0, pos - 32)
-            ctx_end = min(len(binary), end + 32)
-            ctx_bytes = binary[ctx_start:ctx_end]
+    haystack = text.lower()
+    total_len = len(haystack)
+    step = max(1, total_len // 200)
 
-            ctx_ascii = "".join(
+    for idx, (end_pos, kw) in enumerate(automaton.iter(haystack)):
+        start = end_pos - len(kw["pattern"]) + 1
+
+        context_start = max(0, start - 32)
+        context_end = min(len(binary), end_pos + 33)
+        context_bytes = binary[context_start:context_end]
+
+        ascii_ctx = "".join(
+            chr(b) if 32 <= b <= 126 else "."
+            for b in context_bytes
+        )
+
+        cat = f"{kw['domain']}/{kw['subcategory']}"
+
+        results[cat].append({
+            "string": ascii_ctx,
+            "match_key": kw["raw"],
+            "match_span": (start, end_pos + 1),
+            "match_type": "plain",
+            "context": {
+                "offset": start,
+                "bytes": context_bytes,
+            },
+        })
+
+        if progress_cb and idx % step == 0:
+            progress_cb("plain", end_pos / total_len)
+
+    # -------------------------------------------------
+    # Regex scan
+    # -------------------------------------------------
+    if progress_cb:
+        progress_cb("regex", 0.0)
+
+    total_regex = len(regex_rules)
+    regex_step = max(1, total_regex // 100)
+
+    for i, rule in enumerate(regex_rules):
+        for m in rule["pattern"].finditer(text):
+            start, end = m.span()
+
+            context_start = max(0, start - 32)
+            context_end = min(len(binary), end + 32)
+            context_bytes = binary[context_start:context_end]
+
+            ascii_ctx = "".join(
                 chr(b) if 32 <= b <= 126 else "."
-                for b in ctx_bytes
+                for b in context_bytes
             )
 
-            results[rule["category"]].append({
-                "string": ctx_ascii,
+            cat = f"{rule['domain']}/{rule['subcategory']}"
+
+            results[cat].append({
+                "string": ascii_ctx,
                 "match_key": rule["raw"],
-                "match_span": (pos, end),
+                "match_span": (start, end),
                 "match_type": "regex",
                 "context": {
-                    "offset": pos,
-                    "bytes": ctx_bytes,
+                    "offset": start,
+                    "bytes": context_bytes,
                 },
             })
 
+        if progress_cb and i % regex_step == 0:
+            progress_cb("regex", i / total_regex)
+
+    if progress_cb:
+        progress_cb("done", 1.0)
+
     return dict(results)
+
 
 
 def generate_metadata(file_path, findings):
@@ -417,120 +577,6 @@ def load_keywords(base_dir: str):
 
     return keywords
 
-# ---------------- SEARCH -----------------
-def search_keywords(binary):
-    """
-    Optimized keyword search:
-    - One logical pass for all plain keywords
-    - One pass per regex rule (compiled once)
-    - Returns findings grouped by "domain/subcategory"
-    """
-
-    from collections import defaultdict
-    import re
-
-    text = binary.decode("latin1", errors="ignore")
-    text_lower = text.lower()
-
-    results = defaultdict(list)
-
-    # ---------- Load + normalize rules ----------
-    keywords = load_keywords(KEYWORD_DIR)
-
-    rules = []
-    for kw in keywords:
-        raw = kw["value"]
-        category = f"{kw['domain']}/{kw['subcategory']}"
-
-        if raw.startswith("regex:"):
-            rules.append({
-                "type": "regex",
-                "pattern": raw[6:],   # strip 'regex:'
-                "raw": raw,
-                "category": category,
-            })
-        else:
-            rules.append({
-                "type": "plain",
-                "pattern": raw,
-                "raw": raw,
-                "category": category,
-            })
-
-    plain_rules = [r for r in rules if r["type"] == "plain"]
-    regex_rules = [r for r in rules if r["type"] == "regex"]
-
-    # ---------- PLAIN KEYWORDS ----------
-    for rule in plain_rules:
-        needle = rule["pattern"].lower()
-        start = 0
-        needle_len = len(needle)
-
-        if not needle:
-            continue
-
-        while True:
-            pos = text_lower.find(needle, start)
-            if pos == -1:
-                break
-
-            end = pos + needle_len
-
-            ctx_start = max(0, pos - 32)
-            ctx_end = min(len(binary), end + 32)
-            ctx_bytes = binary[ctx_start:ctx_end]
-
-            ctx_ascii = "".join(
-                chr(b) if 32 <= b <= 126 else "."
-                for b in ctx_bytes
-            )
-
-            results[rule["category"]].append({
-                "string": ctx_ascii,
-                "match_key": rule["raw"],
-                "match_span": (pos, end),
-                "match_type": "plain",
-                "context": {
-                    "offset": pos,
-                    "bytes": ctx_bytes,
-                },
-            })
-
-            start = pos + 1
-
-    # ---------- REGEX RULES ----------
-    for rule in regex_rules:
-        try:
-            pat = re.compile(rule["pattern"])
-        except re.error:
-            continue
-
-        for m in pat.finditer(text):
-            pos, end = m.span()
-
-            ctx_start = max(0, pos - 32)
-            ctx_end = min(len(binary), end + 32)
-            ctx_bytes = binary[ctx_start:ctx_end]
-
-            ctx_ascii = "".join(
-                chr(b) if 32 <= b <= 126 else "."
-                for b in ctx_bytes
-            )
-
-            results[rule["category"]].append({
-                "string": ctx_ascii,
-                "match_key": rule["raw"],
-                "match_span": (pos, end),
-                "match_type": "regex",
-                "context": {
-                    "offset": pos,
-                    "bytes": ctx_bytes,
-                },
-            })
-
-    return dict(results)
-
-
 
 # ---------------- OD STYLE -----------------
 def od_bc_view(data, offset, keyword, context=64):
@@ -564,30 +610,169 @@ def od_bc_view(data, offset, keyword, context=64):
 
 # ---------------- TUI -----------------
 class HexwalkTUI:
-    def __init__(self,stdscr,findings,binary,filename,file_path,keywords,show_all=False):
-        self.keywords = keywords
-        self.show_all = show_all
+    def __init__(self, stdscr, binary, filename, file_path, show_all=False):
+        # ---------- Core state ----------
         self.stdscr = stdscr
-        self.findings = findings
+        self.binary = binary
         self.filename = filename
         self.file_path = file_path
-        self.binary = binary
+        self.show_all = show_all
+    
+        # ---------- Initialize ----------
+        self.stdscr.clear()
+        self.stdscr.refresh()
+
+        # ---------- Findings / tree ----------
+        self.findings = {}
+        self.categories = []
+        self.category_tree = []
         self.tree_filter = None
-        self.categories = sorted(findings.keys())
-        self.category_tree = self.build_domain_tree()
+    
+        # ---------- UI state ----------
         self.cat_i = 0
         self.cat_offset = 0
         self.category_scroll_state = {}
         self.subcategory_keyword_state = {}
-        self.domain_subcategory_state = {}
-        self.pane = 0
+    
+        self.pane = 0  # 0 = categories, 1 = hits, 2 = details
         self.hit_i = 0
         self.hit_offset = 0
+    
         self.filter_text = ""
         self.details_visible = True
         self.details_width = 48
+    
+        # ---------- Init curses ----------
         self.init_curses()
+
+        # ---------- Draw empty base UI ----------
+        self.draw_empty_layout()
+    
+        # ---------- Clear screen before scan ----------
+        self.stdscr.clear()
+        self.stdscr.refresh()
+    
+        # ---------- Progress callback ----------
+        def progress_cb(phase, progress):
+            if phase == "plain":
+                self.show_progress_modal(
+                    "Scanning",
+                    "Searching plain keywords…",
+                    progress
+                )
+            elif phase == "regex":
+                self.show_progress_modal(
+                    "Scanning",
+                    "Searching regex rules…",
+                    progress
+                )
+            elif phase == "done":
+                self.show_progress_modal(
+                    "Finalizing",
+                    "Preparing interface…",
+                    1.0
+                )
+    
+        # ---------- Run scan WITH progress ----------
+        self.findings = search_keywords(
+            self.binary,
+            progress_cb=progress_cb
+        )
+    
+        # ---------- Clear modal ----------
+        self.stdscr.clear()
+        self.stdscr.refresh()
+        self.draw()
+    
+        # ---------- Build category tree ----------
+        self.categories = sorted(self.findings.keys())
+        self.category_tree = self.build_domain_tree()
+    
+        # ---------- Enter main loop ----------
         self.main_loop()
+
+    def draw_empty_layout(self):
+        """
+        Draw the base TUI layout without any data.
+        This gives the modal something stable to sit on.
+        """
+        self.stdscr.clear()
+        h, w = self.stdscr.getmaxyx()
+    
+        # Top header
+        header = f" Hexwalk v{HEXWALK_VERSION}  |  Loading…"
+        self.stdscr.addstr(
+            0, 0,
+            header[:w - 1].ljust(w - 1),
+            curses.color_pair(COLOR_TOPHEADER) | curses.A_BOLD
+        )
+    
+        # Pane headers
+        self.stdscr.addstr(1, 0, "Categories".ljust(CAT_W), curses.A_BOLD)
+        self.stdscr.addstr(1, CAT_W + 3, "Hits".ljust(20), curses.A_BOLD)
+        self.stdscr.addstr(
+            1,
+            w - self.details_width - 1,
+            "Details".ljust(self.details_width),
+            curses.A_BOLD
+        )
+    
+        # Vertical separators
+        for y in range(1, h - 1):
+            self.stdscr.addch(y, CAT_W + 1, curses.ACS_VLINE)
+            self.stdscr.addch(y, w - self.details_width - 2, curses.ACS_VLINE)
+    
+        # Status bar
+        self.stdscr.addstr(
+            h - 1,
+            0,
+            "Initializing…".ljust(w - 1),
+            curses.color_pair(COLOR_STATUS) | curses.A_BOLD
+        )
+    
+        self.stdscr.refresh()
+
+    def show_progress_modal(self, title, message, progress=None):
+        stdscr = self.stdscr
+        h, w = stdscr.getmaxyx()
+    
+        modal_h = 9
+        modal_w = min(60, w - 4)
+        modal_y = (h - modal_h) // 2
+        modal_x = (w - modal_w) // 2
+    
+        # Create an independent window (IMPORTANT)
+        win = curses.newwin(modal_h, modal_w, modal_y, modal_x)
+        win.clear()
+        win.box()
+    
+        # Title
+        win.addstr(
+            1, 2,
+            title[: modal_w - 4],
+            curses.A_BOLD
+        )
+    
+        # Message
+        win.addstr(
+            3, 2,
+            message[: modal_w - 4]
+        )
+    
+        # Progress bar
+        if progress is not None:
+            bar_w = modal_w - 4
+            filled = int(bar_w * max(0.0, min(1.0, progress)))
+            bar = "█" * filled + " " * (bar_w - filled)
+    
+            win.addstr(5, 2, bar, curses.A_REVERSE)
+    
+            pct = f"{int(progress * 100):3d}%"
+            win.addstr(6, modal_w - len(pct) - 2, pct)
+    
+        # IMPORTANT: do NOT call refresh() here
+        win.noutrefresh()
+        curses.doupdate()
 
     def init_curses(self):
         curses.curs_set(0)
@@ -702,101 +887,95 @@ class HexwalkTUI:
 
     def build_domain_tree(self):
         """
-        Build a hierarchical tree with FILTER-AWARE counts.
+        Build tree structure from self.findings only.
     
-        Rules:
-        - Keyword filter (/) is applied FIRST
-        - Subcategory count = sum of VISIBLE keyword hit counts
-        - Domain count = sum of VISIBLE subcategory counts
-        - Empty branches hidden unless --show-all
+        Tree levels:
+          domain
+            └─ subcategory
+                 └─ keyword
+    
+        Each node includes hit counts and expansion state.
         """
+    
+        from collections import defaultdict
     
         tree = []
         tree_filter = self.tree_filter.lower() if self.tree_filter else None
     
-        # --------------------------------------------------
-        # Group keywords (single source of truth)
-        # --------------------------------------------------
-        grouped_keywords = defaultdict(lambda: defaultdict(list))
-        for kw in self.keywords:
-            grouped_keywords[kw["domain"]][kw["subcategory"]].append(kw["value"])
+        # -------------------------------------------------
+        # Group findings: domain -> subcategory -> keyword
+        # -------------------------------------------------
+        grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     
-        # --------------------------------------------------
-        # Group hits
-        # --------------------------------------------------
-        hit_map = defaultdict(lambda: defaultdict(list))
-        for cat, hits in self.findings.items():
-            domain, subcat = cat.split("/", 1)
-            hit_map[domain][subcat].extend(hits)
-    
-        # --------------------------------------------------
-        # Build tree
-        # --------------------------------------------------
-        for domain in sorted(grouped_keywords):
-            domain_children = []
-            domain_count = 0
-    
-            for subcat in sorted(grouped_keywords[domain]):
-                keywords = grouped_keywords[domain][subcat]
-                hits = hit_map[domain].get(subcat, [])
-    
-                # count hits per keyword
-                kw_counts = defaultdict(int)
-                for h in hits:
-                    kw_counts[h["match_key"]] += 1
-    
-                children = []
-                subcat_count = 0
-    
-                for kw in keywords:
-                    kw_norm = kw.lower()
-    
-                    # apply keyword filter
-                    if tree_filter and tree_filter not in kw_norm:
-                        continue
-    
-                    count = kw_counts.get(kw, 0)
-    
-                    if count == 0 and not self.show_all:
-                        continue
-    
-                    children.append({
-                        "type": "keyword",
-                        "name": kw,
-                        "count": count,
-                        "parent": f"{domain}/{subcat}",
-                    })
-    
-                    subcat_count += count
-    
-                # hide empty subcategory unless show_all
-                if not children and not self.show_all:
-                    continue
-    
-                domain_children.append({
-                    "type": "subcategory",
-                    "name": subcat,
-                    "display": subcat.replace("_", " ").capitalize(),
-                    "expanded": False,
-                    "parent": domain,
-                    "children": children,
-                    "count": subcat_count,   # FILTERED COUNT
-                })
-    
-                domain_count += subcat_count
-    
-            # hide empty domain unless show_all
-            if domain_count == 0 and not self.show_all:
+        for category, hits in self.findings.items():
+            if "/" not in category:
                 continue
     
-            tree.append({
+            domain, subcat = category.split("/", 1)
+    
+            for hit in hits:
+                key = hit["match_key"]
+                grouped[domain][subcat][key].append(hit)
+    
+        # -------------------------------------------------
+        # Build tree nodes
+        # -------------------------------------------------
+        for domain in sorted(grouped.keys()):
+            domain_total = 0
+            domain_node = {
                 "type": "domain",
                 "name": domain,
                 "display": domain.capitalize(),
                 "expanded": False,
-                "children": domain_children,
-                "count": domain_count,     # FILTERED COUNT
-            })
+                "count": 0,
+                "children": []
+            }
+    
+            for subcat in sorted(grouped[domain].keys()):
+                sub_total = 0
+                sub_node = {
+                    "type": "subcategory",
+                    "name": subcat,
+                    "parent": domain,
+                    "display": subcat.replace("_", " ").capitalize(),
+                    "expanded": False,
+                    "count": 0,
+                    "children": []
+                }
+    
+                for key in sorted(grouped[domain][subcat].keys()):
+                    hits = grouped[domain][subcat][key]
+    
+                    # Apply filter (keyword-level)
+                    if tree_filter and tree_filter not in key.lower():
+                        continue
+    
+                    count = len(hits)
+                    if count == 0 and not self.show_all:
+                        continue
+    
+                    sub_total += count
+                    sub_node["children"].append({
+                        "type": "keyword",
+                        "name": key,
+                        "display": key,
+                        "parent": f"{domain}/{subcat}",
+                        "count": count,
+                        "hits": hits,
+                    })
+    
+                if sub_total == 0 and not self.show_all:
+                    continue
+    
+                sub_node["count"] = sub_total
+                domain_total += sub_total
+                domain_node["children"].append(sub_node)
+    
+            if domain_total == 0 and not self.show_all:
+                continue
+    
+            domain_node["count"] = domain_total
+            tree.append(domain_node)
     
         return tree
 
@@ -1821,7 +2000,15 @@ class HexwalkTUI:
     
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
-    
+
+# ---------------- PROGRESS BAR -----------------
+
+def print_progress(pct):
+    width = 40
+    filled = int(width * pct)
+    bar = "#" * filled + "-" * (width - filled)
+    print(f"\rScanning: [{bar}] {pct*100:5.1f}%", end="", flush=True)
+
 # ---------------- MAIN -----------------
 def main():
     parser = argparse.ArgumentParser(
@@ -1862,39 +2049,41 @@ def main():
     else:
         binary = load_binary(file_path)
 
-    keywords = load_keywords(KEYWORD_DIR)
-    matches = search_keywords(binary)
-
-    if not matches:
-        print("No matches found.")
-        sys.exit(0)
-
-    # ---------- Non-interactive mode ----------
+    # ==================================================
+    # NON-INTERACTIVE MODE (NO CURSES)
+    # ==================================================
     if args.summary or args.export:
+        matches = search_keywords(binary, progress_cb=None)
+
+        if not matches:
+            print("No matches found.")
+            sys.exit(0)
+
         if args.export:
             out = write_export(matches, filename, file_path)
             print(f"Wrote export: {out}")
 
         if args.summary:
-            # Generate summary text without TUI
             summary = generate_summary_text(matches, filename, file_path)
             out = write_summary(summary, filename)
             print(f"Wrote summary: {out}")
 
         sys.exit(0)
 
-    # ---------- Interactive TUI ----------
+    # ==================================================
+    # INTERACTIVE MODE (TUI-FIRST)
+    # ==================================================
     curses.wrapper(
         lambda stdscr: HexwalkTUI(
             stdscr,
-            matches,
-            binary,
-            filename,
-            file_path,
-            keywords,
+            binary=binary,
+            filename=filename,
+            file_path=file_path,
             show_all=args.show_all
         )
     )
+
+    
 
 if __name__=="__main__":
     main()

@@ -7,3 +7,4 @@ os
 pathlib
 re
 sys
+ahocorasick
