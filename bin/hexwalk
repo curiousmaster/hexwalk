@@ -641,7 +641,14 @@ class HexwalkTUI:
         self.filter_text = ""
         self.details_visible = True
         self.details_width = 48
-    
+
+        # ---------- Count column widths ----------
+        self.count_widths = {
+            "domain": 1,
+            "subcategory": 1,
+            "keyword": 1,
+        }
+
         # ---------- Init curses ----------
         self.init_curses()
 
@@ -687,9 +694,69 @@ class HexwalkTUI:
         # ---------- Build category tree ----------
         self.categories = sorted(self.findings.keys())
         self.category_tree = self.build_domain_tree()
+        self.recompute_count_widths()
     
         # ---------- Enter main loop ----------
         self.main_loop()
+
+    def compute_count_widths(self):
+        """
+        Compute count column widths per tree level.
+        Returns dict: level -> width
+        """
+        widths = {
+            "domain": 0,
+            "subcategory": 0,
+            "keyword": 0,
+        }
+    
+        for node in self.visible_category_rows():
+            level = node.get("type")
+            count = node.get("count")
+    
+            if level in widths and isinstance(count, int):
+                widths[level] = max(widths[level], len(str(count)))
+    
+        # Enforce sane minimums
+        for k in widths:
+            widths[k] = max(1, widths[k])
+    
+        return widths
+
+    def recompute_count_widths(self):
+        """
+        Recompute count column widths per tree level.
+        Call this after search or when filter changes.
+        """
+        widths = {
+            "domain": 1,
+            "subcategory": 1,
+            "keyword": 1,
+        }
+    
+        for node in self.category_tree:
+            # domain
+            if node["type"] == "domain":
+                widths["domain"] = max(
+                    widths["domain"],
+                    len(str(node["count"]))
+                )
+    
+                for sub in node.get("children", []):
+                    # subcategory
+                    widths["subcategory"] = max(
+                        widths["subcategory"],
+                        len(str(sub["count"]))
+                    )
+    
+                    for kw in sub.get("children", []):
+                        # keyword
+                        widths["keyword"] = max(
+                            widths["keyword"],
+                            len(str(kw["count"]))
+                        )
+    
+        self.count_widths = widths
 
     def draw_empty_layout(self):
         """
@@ -1678,6 +1745,10 @@ class HexwalkTUI:
         # ==========================================================
         rows = self.visible_category_rows()
         cat_height = h - 3  # top header + pane header + status bar
+
+        dw = self.count_widths['domain']
+        sw = self.count_widths['subcategory']
+        kw = self.count_widths['keyword']
     
         # ---- Scroll handling (NEW) ----
         if self.cat_i < self.cat_offset:
@@ -1701,15 +1772,15 @@ class HexwalkTUI:
             
             if node["type"] == "domain":
                 arrow = "▾" if node["expanded"] else "▸"
-                label = f"{arrow} [{node['count']:>4}] {node['display']}"
+                label = f"{arrow} [{node['count']:>{dw}}] {node['display']}"
                 attr |= curses.A_BOLD
             
             elif node["type"] == "subcategory":
                 arrow = "▾" if node["expanded"] else "▸"
-                label = f"  {arrow} [{node['count']:>4}] {node['display']}"
+                label = f"  {arrow} [{node['count']:>{sw}}] {node['display']}"
             
             elif node["type"] == "keyword":
-                label = f"      [{node['count']:>4}] {node['name']}"
+                label = f"      [{node['count']:>{kw}}] {node['name']}"
                 attr |= curses.A_ITALIC
             
             if idx == self.cat_i and self.pane == 0:
@@ -1873,6 +1944,51 @@ class HexwalkTUI:
                     self.clamp_category_scroll()
     
             # ==================================================
+            # CATEGORY LEFT RIGHT NAVIGATION
+            # ==================================================
+            if self.pane == 0 and key in ( curses.KEY_RIGHT, curses.KEY_LEFT):
+                rows = self.visible_category_rows()
+                if not rows:
+                    continue
+            
+                node = rows[self.cat_i]
+            
+                # RIGHT = expand
+                if key == curses.KEY_RIGHT:
+                    if node["type"] in ("domain", "subcategory") and not node["expanded"]:
+                        node["expanded"] = True
+            
+                        # Restore last keyword position for subcategory
+                        if node["type"] == "subcategory":
+                            key_id = f"{node['parent']}/{node['name']}"
+                            if key_id in self.subcategory_keyword_state:
+                                self.cat_i = self.subcategory_keyword_state[key_id]
+            
+                        self.clamp_category_index()
+                        self.clamp_category_scroll()
+            
+                # LEFT = collapse
+                elif key == curses.KEY_LEFT:
+                    if node["type"] in ("domain", "subcategory") and node["expanded"]:
+                        node["expanded"] = False
+                        self.clamp_category_index()
+                        self.clamp_category_scroll()
+            
+                    elif node["type"] == "keyword":
+                        # Collapse keyword → go to parent subcategory
+                        parent = node["parent"]
+                        domain, subcat = parent.split("/", 1)
+            
+                        self.subcategory_keyword_state[parent] = self.cat_i
+            
+                        idx = self.find_subcategory_row_index(domain, subcat)
+                        if idx is not None:
+                            self.cat_i = idx
+            
+                        self.clamp_category_index()
+                        self.clamp_category_scroll()
+
+            # ==================================================
             # ENTER — ACTIVATE / TOGGLE (MUST BE EARLY)
             # ==================================================
             elif key in (10, 13, curses.KEY_ENTER):
@@ -1962,6 +2078,7 @@ class HexwalkTUI:
     
                 # rebuild tree with filter applied
                 self.category_tree = self.build_domain_tree()
+                self.recompute_count_widths()
                 self.cat_i = 0
                 self.cat_offset = 0
                 self.hit_i = 0
