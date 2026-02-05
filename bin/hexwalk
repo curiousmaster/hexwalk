@@ -398,7 +398,7 @@ def search_keywords(binary, progress_cb=None):
             "string": ascii_ctx,
             "match_key": kw["raw"],
             "match_span": (start, end_pos + 1),
-            "match_length": end_pos + 1 - start,
+            "match_len": end_pos + 1 - start,
             "match_type": "plain",
             "context": {
                 "offset": start,
