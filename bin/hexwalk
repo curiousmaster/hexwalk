@@ -99,6 +99,33 @@ DETAILS_W = 50
 HITS_MIN_W = 10
 SEP = 2
 
+# ---------------- HELPERS -----------------
+def normalize_rules(keywords):
+    """
+    Convert loaded keywords into normalized rule objects.
+    """
+    rules = []
+
+    for kw in keywords:
+        raw = kw["value"]
+
+        if raw.startswith("regex:"):
+            rules.append({
+                "type": "regex",
+                "pattern": raw[6:],   # strip "regex:"
+                "raw": raw,
+                "category": f"{kw['domain']}/{kw['subcategory']}",
+            })
+        else:
+            rules.append({
+                "type": "plain",
+                "pattern": raw,
+                "raw": raw,
+                "category": f"{kw['domain']}/{kw['subcategory']}",
+            })
+
+    return rules
+
 # ---------------- HEX FILE PARSER -----------------
 def is_hex_file(file_path):
     try:
@@ -181,22 +208,90 @@ def hex_to_bin(file_path):
     return bytes(memory[:max_addr])
 
 # ---------------- EXPORT HELPERS -----------------
-def keywords_to_findings(keywords):
+
+def search_keywords(binary):
     """
-    Convert keyword list into the rule structure expected by search_keywords().
+    Optimized search:
+    - One pass for all plain keywords
+    - One pass per regex rule (compiled once)
     """
-    findings = defaultdict(list)
+    text = binary.decode("latin1", errors="ignore")
+    text_lower = text.lower()
 
-    for kw in keywords:
-        category = f"{kw['domain']}/{kw['subcategory']}"
+    results = defaultdict(list)
 
-        findings[category].append({
-            "type": "plain",
-            "pattern": kw["value"],
-            "raw": kw["value"],
-        })
+    # ---------- Prepare rules ----------
+    rules = normalize_rules(load_keywords(KEYWORD_DIR))
 
-    return dict(findings)
+    plain_rules = [r for r in rules if r["type"] == "plain"]
+    regex_rules = [r for r in rules if r["type"] == "regex"]
+
+    # ---------- PLAIN KEYWORDS (single logical pass) ----------
+    for rule in plain_rules:
+        needle = rule["pattern"].lower()
+        start = 0
+
+        while True:
+            pos = text_lower.find(needle, start)
+            if pos == -1:
+                break
+
+            end = pos + len(needle)
+
+            ctx_start = max(0, pos - 32)
+            ctx_end = min(len(binary), end + 32)
+            ctx_bytes = binary[ctx_start:ctx_end]
+
+            ctx_ascii = "".join(
+                chr(b) if 32 <= b <= 126 else "."
+                for b in ctx_bytes
+            )
+
+            results[rule["category"]].append({
+                "string": ctx_ascii,
+                "match_key": rule["raw"],
+                "match_span": (pos, end),
+                "match_type": "plain",
+                "context": {
+                    "offset": pos,
+                    "bytes": ctx_bytes,
+                },
+            })
+
+            start = pos + 1
+
+    # ---------- REGEX RULES ----------
+    for rule in regex_rules:
+        try:
+            pat = re.compile(rule["pattern"])
+        except re.error:
+            continue
+
+        for m in pat.finditer(text):
+            pos, end = m.span()
+
+            ctx_start = max(0, pos - 32)
+            ctx_end = min(len(binary), end + 32)
+            ctx_bytes = binary[ctx_start:ctx_end]
+
+            ctx_ascii = "".join(
+                chr(b) if 32 <= b <= 126 else "."
+                for b in ctx_bytes
+            )
+
+            results[rule["category"]].append({
+                "string": ctx_ascii,
+                "match_key": rule["raw"],
+                "match_span": (pos, end),
+                "match_type": "regex",
+                "context": {
+                    "offset": pos,
+                    "bytes": ctx_bytes,
+                },
+            })
+
+    return dict(results)
+
 
 def generate_metadata(file_path, findings):
     total_hits = sum(len(hits) for hits in findings.values())
@@ -323,73 +418,118 @@ def load_keywords(base_dir: str):
     return keywords
 
 # ---------------- SEARCH -----------------
-def search_keywords(binary, findings):
-    results = {}
+def search_keywords(binary):
+    """
+    Optimized keyword search:
+    - One logical pass for all plain keywords
+    - One pass per regex rule (compiled once)
+    - Returns findings grouped by "domain/subcategory"
+    """
+
+    from collections import defaultdict
+    import re
+
     text = binary.decode("latin1", errors="ignore")
+    text_lower = text.lower()
 
-    for cat, rules in findings.items():
-        cat_hits = []
+    results = defaultdict(list)
 
-        for rule in rules:
-            try:
-                # ------------------------------------------------
-                # Normalize rule to raw string
-                # ------------------------------------------------
-                if isinstance(rule, dict):
-                    raw = rule.get("raw") or rule.get("pattern")
-                else:
-                    raw = rule
+    # ---------- Load + normalize rules ----------
+    keywords = load_keywords(KEYWORD_DIR)
 
-                # ------------------------------------------------
-                # REGEX (filesystem or legacy)
-                # ------------------------------------------------
-                if raw.startswith("regex:"):
-                    pattern = raw[len("regex:"):]
-                    pat = re.compile(pattern)
-                    match_type = "regex"
-                    match_key = raw
+    rules = []
+    for kw in keywords:
+        raw = kw["value"]
+        category = f"{kw['domain']}/{kw['subcategory']}"
 
-                # ------------------------------------------------
-                # PLAIN KEYWORD
-                # ------------------------------------------------
-                else:
-                    pat = re.compile(re.escape(raw), re.IGNORECASE)
-                    match_type = "keyword"
-                    match_key = raw
+        if raw.startswith("regex:"):
+            rules.append({
+                "type": "regex",
+                "pattern": raw[6:],   # strip 'regex:'
+                "raw": raw,
+                "category": category,
+            })
+        else:
+            rules.append({
+                "type": "plain",
+                "pattern": raw,
+                "raw": raw,
+                "category": category,
+            })
 
-            except re.error:
-                continue
+    plain_rules = [r for r in rules if r["type"] == "plain"]
+    regex_rules = [r for r in rules if r["type"] == "regex"]
 
+    # ---------- PLAIN KEYWORDS ----------
+    for rule in plain_rules:
+        needle = rule["pattern"].lower()
+        start = 0
+        needle_len = len(needle)
 
+        if not needle:
+            continue
 
-            for m in pat.finditer(text):
-                off = m.start()
-                s = m.group()
+        while True:
+            pos = text_lower.find(needle, start)
+            if pos == -1:
+                break
 
-                start_context = max(0, off - 32)
-                end_context = min(len(binary), off + len(s) + 32)
-                context_bytes = binary[start_context:end_context]
+            end = pos + needle_len
 
-                context_ascii = "".join(
-                    chr(b) if 32 <= b <= 126 else "."
-                    for b in context_bytes
-                )
+            ctx_start = max(0, pos - 32)
+            ctx_end = min(len(binary), end + 32)
+            ctx_bytes = binary[ctx_start:ctx_end]
 
-                cat_hits.append({
-                    "string": context_ascii,
-                    "match_key": match_key,
-                    "match_span": m.span(),
-                    "match_type": match_type,
-                    "context": {
-                        "offset": off,
-                        "bytes": context_bytes,
-                    },
-                })
+            ctx_ascii = "".join(
+                chr(b) if 32 <= b <= 126 else "."
+                for b in ctx_bytes
+            )
 
-        if cat_hits:
-            results[cat] = cat_hits
+            results[rule["category"]].append({
+                "string": ctx_ascii,
+                "match_key": rule["raw"],
+                "match_span": (pos, end),
+                "match_type": "plain",
+                "context": {
+                    "offset": pos,
+                    "bytes": ctx_bytes,
+                },
+            })
 
-    return results
+            start = pos + 1
+
+    # ---------- REGEX RULES ----------
+    for rule in regex_rules:
+        try:
+            pat = re.compile(rule["pattern"])
+        except re.error:
+            continue
+
+        for m in pat.finditer(text):
+            pos, end = m.span()
+
+            ctx_start = max(0, pos - 32)
+            ctx_end = min(len(binary), end + 32)
+            ctx_bytes = binary[ctx_start:ctx_end]
+
+            ctx_ascii = "".join(
+                chr(b) if 32 <= b <= 126 else "."
+                for b in ctx_bytes
+            )
+
+            results[rule["category"]].append({
+                "string": ctx_ascii,
+                "match_key": rule["raw"],
+                "match_span": (pos, end),
+                "match_type": "regex",
+                "context": {
+                    "offset": pos,
+                    "bytes": ctx_bytes,
+                },
+            })
+
+    return dict(results)
+
 
 
 # ---------------- OD STYLE -----------------
@@ -462,6 +602,58 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
+    def confirm_quit(self):
+        # --------------------------------------------------
+        # Clear and redraw background cleanly
+        # --------------------------------------------------
+        self.stdscr.clear()
+        self.draw()
+        self.stdscr.refresh()
+    
+        h, w = self.stdscr.getmaxyx()
+    
+        # ---------- Modal geometry ----------
+        modal_h = 7
+        modal_w = 40
+        modal_y = (h - modal_h) // 2
+        modal_x = (w - modal_w) // 2
+    
+        win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
+        win.keypad(True)
+        win.clear()
+        win.box()
+    
+        # ---------- Title ----------
+        title = " Confirm Quit "
+        win.addstr(
+            0,
+            max(2, (modal_w - len(title)) // 2),
+            title,
+            curses.A_BOLD
+        )
+    
+        # ---------- Content ----------
+        lines = [
+            "Quit HexWalk?",
+            "",
+            "  y : Yes, quit",
+            "  n : No, return",
+        ]
+    
+        for i, line in enumerate(lines):
+            win.addstr(2 + i, 2, line)
+    
+        win.refresh()
+    
+        # ---------- Input loop ----------
+        while True:
+            key = win.getch()
+    
+            if key in (ord("y"), ord("Y")):
+                return True
+            else:
+                return False
+    
     def expand_all(self):
         """Expand all domains and subcategories."""
         for d in self.category_tree:
@@ -1480,7 +1672,8 @@ class HexwalkTUI:
             # GLOBAL ACTIONS
             # ==================================================
             if key == ord("q"):
-                break
+                if self.confirm_quit():
+                    break
     
             elif key == ord("h"):
                 self.show_help()
@@ -1670,8 +1863,7 @@ def main():
         binary = load_binary(file_path)
 
     keywords = load_keywords(KEYWORD_DIR)
-    findings_def = keywords_to_findings(keywords)
-    matches = search_keywords(binary, findings_def)
+    matches = search_keywords(binary)
 
     if not matches:
         print("No matches found.")

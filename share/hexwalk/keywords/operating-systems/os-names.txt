@@ -1,0 +1,144 @@
+Android
+Android-x86
+Bitrig
+bridge OS
+bridgeOS
+BSD
+CB Unix
+CBUnix
+Chrome OS
+ChromeOS
+Chromium OS
+ChromiumOS
+Container-Optimized OS
+COS
+Darwin
+DragonFly BSD
+DragonFlyBSD
+EulerOS
+Fire OS
+FireOS
+Free BSD
+FreeBSD
+Fuchsia
+Fugulta
+Ghost BSD
+GhostBSD
+GNU
+HarmonyOS
+illumos
+iOS
+iPad
+iPad OS
+iPadOS
+iPhone OS
+iPod
+Linux
+LiteOS
+mac OS
+macOS
+macOS Server
+macOSServer
+Mac OS X
+Mac OS X Server
+MacOSXServer
+Midnight BSD
+MidnightBSD
+MINI-UNIX
+MINIX
+Net BSD
+NetBSD
+Nexenta OS
+NexentaOS
+Nomad BSD
+NomadBSD
+Open BSD
+OpenBSD
+Open Indiana
+OpenIndiana
+Open Solaris
+OpenSolaris
+OS X
+OS X Server
+OSXServer
+Redox
+Remix OS
+RemixOS
+RISC OS
+RISCOS
+Smart OS
+SmartOS
+True OS
+TrueOS
+tv OS
+tvOS
+Unix
+USG
+vision OS
+visionOS
+watch OS
+watchOS
+Wear OS
+WearOS
+Windows
+Windows 10
+Windows10
+Windows 10 Mobile
+Windows10Mobile
+Windows 11
+Windows11
+Windows 2000
+Windows2000
+Windows 7
+Windows7
+Windows 8
+Windows8
+Windows 8.1
+Windows8.1
+Windows Azure
+WindowsAzure
+Windows CE
+WindowsCE
+Windows CE 3.0
+WindowsCE3.0
+Windows CE 5.0
+WindowsCE5.0
+Windows Home Server
+WindowsHomeServer
+Windows Home Server 2011
+WindowsHomeServer2011
+Windows NT 3.1
+WindowsNT3.1
+Windows NT 3.5
+WindowsNT3.5
+Windows NT 3.51
+WindowsNT3.51
+Windows NT 4.0
+WindowsNT4.0
+Windows Phone 8
+WindowsPhone8
+Windows Phone 8.1
+WindowsPhone8.1
+Windows RT
+WindowsRT
+Windows Server 2003
+WindowsServer2003
+Windows Server 2008
+WindowsServer2008
+Windows Server 2008 R2
+WindowsServer2008R2
+Windows Server 2012
+WindowsServer2012
+Windows Server 2012 R2
+WindowsServer2012R2
+Windows Server 2016
+WindowsServer2016
+Windows Server 2019
+WindowsServer2019
+Windows Server 2022
+WindowsServer2022
+Windows Vista
+WindowsVista
+Windows XP
+WindowsXP
+Xenix
