@@ -1,0 +1,3 @@
+# MAC Addresses
+regex:\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b
+regex:\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b
