@@ -398,6 +398,7 @@ def search_keywords(binary, progress_cb=None):
             "string": ascii_ctx,
             "match_key": kw["raw"],
             "match_span": (start, end_pos + 1),
+            "match_length": end_pos + 1 - start,
             "match_type": "plain",
             "context": {
                 "offset": start,
@@ -436,6 +437,7 @@ def search_keywords(binary, progress_cb=None):
                 "string": ascii_ctx,
                 "match_key": rule["raw"],
                 "match_span": (start, end),
+                "match_len": end - start,
                 "match_type": "regex",
                 "context": {
                     "offset": start,
@@ -1378,7 +1380,7 @@ class HexwalkTUI:
         while True:
             hit = hits[idx]
             offset = hit["context"]["offset"]
-            match_len = len(hit["match_key"])
+            match_len = hit["match_len"]
     
             win.clear()
             win.box()
