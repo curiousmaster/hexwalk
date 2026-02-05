@@ -641,7 +641,7 @@ class HexwalkTUI:
         self.hit_offset = 0
     
         self.filter_text = ""
-        self.details_visible = True
+        self.details_visible = False
         self.details_width = 48
 
         # ---------- Count column widths ----------
