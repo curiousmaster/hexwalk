@@ -1,0 +1,203 @@
+.TH HEXWALK 1 "September 2026" "HexWalk" "User Commands"
+
+.SH NAME
+hexwalk \- interactive keyword-based binary and firmware analysis tool
+
+.SH SYNOPSIS
+.B hexwalk
+.RI [ OPTIONS ] " file"
+
+.SH DESCRIPTION
+HexWalk is an interactive, terminal-based analysis tool for inspecting binaries,
+firmware images, and raw data files for embedded strings, artifacts, and
+security-relevant indicators.
+
+It combines optimized keyword scanning with a curses-based user interface,
+allowing analysts to explore findings interactively while retaining the ability
+to export structured results and summaries.
+
+HexWalk is designed for security engineers, reverse engineers, and incident
+responders who need fast, repeatable insight into opaque or unknown binaries.
+
+.SH SUPPORTED FILE TYPES
+HexWalk can analyze:
+
+.TP
+.B Raw binaries
+Generic binary files, memory dumps, and disk images.
+
+.TP
+.B ELF executables
+Executables and shared objects.
+
+.TP
+.B Intel HEX firmware images
+Automatically detected and converted into a flat binary image prior to analysis.
+
+.TP
+.B Text files
+Treated as binary-safe input.
+
+.SH OPTIONS
+
+.TP
+.BR \-k ", " \-\-keyword " " PATTERN
+Perform an ad-hoc search instead of using the predefined keyword lists.
+
+The pattern behaves similarly to egrep:
+.IP
+\- Multiple keywords may be separated using the pipe character (\fB|\fP)
+.IP
+\- Regex expressions may be specified using the \fBregex:\fP prefix
+.IP
+\- Case-insensitive matching is used by default
+
+Examples:
+.IP
+\fBhexwalk -k root /etc/passwd\fP
+.IP
+\fBhexwalk -k 'root|admin|password' firmware.bin\fP
+.IP
+\fBhexwalk -k 'regex:\\b(?:10|192\\.168)\\.' image.bin\fP
+
+When this option is used, keyword files on disk are ignored.
+
+.TP
+.B \-\-summary
+Generate a textual summary report and exit without starting the interactive UI.
+
+.TP
+.B \-\-export
+Generate a JSON export of all findings and exit without starting the interactive UI.
+
+.TP
+.B \-\-show\-all
+Display all domains, subcategories, and keywords in the category tree,
+even if no hits are found.
+
+.TP
+.B \-h ", " \-\-help
+Show help text and exit.
+
+.SH USER INTERFACE
+
+HexWalk runs entirely in the terminal and is divided into three panes:
+
+.TP
+.B Categories
+A hierarchical tree showing domains, subcategories, and keywords.
+
+.TP
+.B Hits
+Displays matching strings and contextual excerpts.
+
+.TP
+.B Details
+Shows a hex and ASCII view aligned to file offsets.
+
+A separate summary screen can be invoked from within the UI.
+
+.SH KEY BINDINGS
+
+.TP
+.B Arrow Up / Down
+Move selection within the active pane.
+
+.TP
+.B Arrow Left
+Collapse the current category or subcategory.
+
+.TP
+.B Arrow Right
+Expand the current category or subcategory.
+
+.TP
+.B Enter
+Toggle expand/collapse in the category pane, or open the hit inspection modal.
+
+.TP
+.B Tab
+Switch between panes.
+
+.TP
+.B /
+Filter results interactively.
+
+.TP
+.B +
+Expand the entire category tree.
+
+.TP
+.B -
+Collapse the entire category tree.
+
+.TP
+.B d
+Toggle the details pane.
+
+.TP
+.B e
+Export current findings to JSON.
+
+.TP
+.B s
+Show the summary screen.
+
+.TP
+.B h
+Show help.
+
+.TP
+.B q
+Quit HexWalk (with confirmation).
+
+.SH OUTPUT FILES
+
+.TP
+.B hexwalk_<filename>_export.json
+Structured JSON export of all findings.
+
+.TP
+.B hexwalk_<filename>_summary.txt
+Human-readable summary report.
+
+.SH PERFORMANCE
+HexWalk uses an optimized Aho–Corasick matcher for plain keywords and a separate
+regex scanning phase. Progress is displayed in a modal during scanning.
+
+Large keyword sets and large binaries are handled efficiently.
+
+.SH ENVIRONMENT
+
+.TP
+.B TERM
+HexWalk uses ASCII-safe UI elements by default to ensure compatibility across
+terminals, SSH sessions, and PuTTY.
+
+.SH FILES
+
+.TP
+.B /usr/local/share/hexwalk/keywords
+Default keyword definitions organized by domain and subcategory.
+
+.SH EXIT STATUS
+
+.TP
+.B 0
+Successful execution.
+
+.TP
+.B 1
+Invalid arguments or file error.
+
+.SH AUTHOR
+CuriousMaster
+
+.SH LICENSE
+MIT License
+
+.SH SEE ALSO
+.BR strings (1),
+.BR grep (1),
+.BR egrep (1)
+
