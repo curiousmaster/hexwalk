@@ -1,6 +1,6 @@
-*.cer
-*.crt
-*.key
-*.p12
-*.p7b
-*.pem
+regex:.*\.cer
+regex:.*\.crt
+regex:.*\.key
+regex:.*\.p12
+regex:.*\.p7b
+regex:.*\.pem

@@ -1,3 +1,3 @@
-*.cfg
-*.conf
-*.ini
+regex:*\.cfg
+regex:*\.conf
+regex:*\.ini

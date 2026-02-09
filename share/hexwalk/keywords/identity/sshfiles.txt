@@ -1,9 +1,5 @@
-*authorized_keys*
 authorized_keys
-*host_key*
 host_key
-*id_dsa*
 id_dsa
-*id_rsa*
 id_rsa
-*.pub
+regex:*\.pub
