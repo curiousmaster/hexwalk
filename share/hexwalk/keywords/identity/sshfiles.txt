@@ -2,4 +2,4 @@ authorized_keys
 host_key
 id_dsa
 id_rsa
-regex:*\.pub
+.pub
