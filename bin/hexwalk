@@ -392,7 +392,7 @@ def scan_plain_ac(binary, plain_rules, progress_cb=None):
 
     return results
 
-def search_keywords(binary, progress_cb=None):
+def search_keywords(binary, keywords, progress_cb=None):
     """
     Optimized keyword search using Aho–Corasick (plain)
     and regex scanning.
@@ -406,11 +406,6 @@ def search_keywords(binary, progress_cb=None):
 
     # Decode ONCE for AC + regex (binary-safe)
     text = binary.decode("latin1", errors="ignore")
-
-    # -------------------------------------------------
-    # Load keywords
-    # -------------------------------------------------
-    keywords = load_keywords(KEYWORD_DIR)
 
     plain_keywords = []
     regex_rules = []
@@ -430,7 +425,7 @@ def search_keywords(binary, progress_cb=None):
                 continue
         else:
             plain_keywords.append({
-                "pattern": val.lower(),   # <-- STRING
+                "pattern": val.lower(),
                 "domain": kw["domain"],
                 "subcategory": kw["subcategory"],
                 "raw": val,
@@ -621,6 +616,35 @@ def make_findings_json_safe(findings):
     return safe
 
 # ---------------- KEYWORDS -----------------
+def load_cli_keywords(expr):
+    """
+    Build a synthetic keyword list from -k / --keyword.
+
+    Supports:
+      - literal keywords separated by |
+      - regex:... expressions
+
+    Example:
+      root|admin|regex:\\bpassword\\b
+    """
+    keywords = []
+
+    parts = expr.split("|")
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        keywords.append({
+            "value": part,
+            "domain": "search",
+            "subcategory": "cli",
+            "raw": part,
+        })
+
+    return keywords
+
 def load_keywords(base_dir: str):
     """
     Load keywords from keywords/<domain>/<subcategory>.txt
@@ -690,12 +714,13 @@ def od_bc_view(data, offset, keyword, context=64):
 
 # ---------------- TUI -----------------
 class HexwalkTUI:
-    def __init__(self, stdscr, binary, filename, file_path, show_all=False):
+    def __init__(self, stdscr, binary, filename, file_path, keywords, show_all=False):
         # ---------- Core state ----------
         self.stdscr = stdscr
         self.binary = binary
         self.filename = filename
         self.file_path = file_path
+        self.keywords = keywords
         self.show_all = show_all
     
         # ---------- Initialize ----------
@@ -765,6 +790,7 @@ class HexwalkTUI:
         # ---------- Run scan WITH progress ----------
         self.findings = search_keywords(
             self.binary,
+            self.keywords,
             progress_cb=progress_cb
         )
     
@@ -2246,6 +2272,11 @@ def main():
         help="Show all domains, subcategories, and keywords even if no hits are found",
     )
 
+    parser.add_argument(
+        "-k", "--keyword",
+        help="Ad-hoc keyword(s), e.g. 'root|admin|regex:\\bfoo\\b'",
+    )
+
     args = parser.parse_args()
 
     file_path = args.file
@@ -2257,11 +2288,17 @@ def main():
     else:
         binary = load_binary(file_path)
 
+    # ---------- Load keywords ----------
+    if args.keyword:
+        keywords = load_cli_keywords(args.keyword)
+    else:
+        keywords = load_keywords(KEYWORD_DIR)
+
     # ==================================================
     # NON-INTERACTIVE MODE (NO CURSES)
     # ==================================================
     if args.summary or args.export:
-        matches = search_keywords(binary, progress_cb=None)
+        matches = search_keywords(binary, keywords, progress_cb=None)
 
         if not matches:
             print("No matches found.")
@@ -2287,12 +2324,10 @@ def main():
             binary=binary,
             filename=filename,
             file_path=file_path,
+            keywords=keywords,
             show_all=args.show_all
         )
     )
 
-    
-
 if __name__=="__main__":
     main()
-
