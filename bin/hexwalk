@@ -61,8 +61,19 @@
 #     MIT License
 #
 # ===================================================
-import curses, os, sys, re, json
+import sys
+import os
 import argparse
+import re
+import json
+import copy
+import textwrap
+import configparser
+import urllib.request
+import urllib.error
+
+import curses
+
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -70,6 +81,7 @@ from collections import defaultdict
 HEXWALK_VERSION = "1.0"
 
 KEYWORD_DIR = "/usr/local/share/hexwalk/keywords"
+CONFIG_PATH = os.path.expanduser("~/.hexwalkrc")
 
 DOMAIN_RE = re.compile(r'^(\d+)_([a-zA-Z0-9_-]+)$')
 
@@ -100,6 +112,135 @@ HITS_MIN_W = 10
 SEP = 2
 
 # ---------------- HELPERS -----------------
+# --- CONFIG ---
+def default_config():
+    return {
+        "ollama": {
+            "enabled": False,
+            "url": "http://localhost:11434",
+            "model": "",
+            "timeout": 5,
+        },
+        "prompts": {
+            "0": {
+                "name": "Default security analysis",
+                "text": (
+                    "Analyze the following findings and provide a concise "
+                    "security-focused summary."
+                ),
+            }
+        },
+        "active_prompt": "0",
+    }
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        cfg = default_config()
+        save_config(cfg)
+        return cfg
+
+    with open(CONFIG_PATH, "r") as f:
+        return json.load(f)
+
+def save_config(cfg):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+# --- OLLAMA ---
+def probe_ollama(url, timeout=5):
+    """
+    Probe Ollama API for availability and models.
+
+    Returns:
+        (ok: bool, models: list[str], error: str | None)
+    """
+    api_url = url.rstrip("/") + "/api/tags"
+
+    try:
+        req = urllib.request.Request(api_url)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False, [], f"HTTP {resp.status}"
+
+            data = json.loads(resp.read().decode("utf-8"))
+            models = [
+                m.get("name", "")
+                for m in data.get("models", [])
+                if m.get("name")
+            ]
+
+            if not models:
+                return False, [], "No models available"
+
+            return True, models, None
+
+    except urllib.error.URLError as e:
+        return False, [], str(e.reason)
+    except Exception as e:
+        return False, [], str(e)
+
+def build_ai_summary_prompt(filename, findings):
+    """
+    Build a concise, bounded prompt for AI summarization.
+    """
+    lines = []
+    total_hits = 0
+
+    for cat, hits in findings.items():
+        count = len(hits)
+        total_hits += count
+        lines.append(f"- {cat}: {count} hits")
+
+    summary_block = "\n".join(lines)
+
+    prompt = f"""
+You are a security analysis assistant.
+
+The following file was analyzed:
+File name: {filename}
+
+Scan results:
+Total hits: {total_hits}
+
+Breakdown by category:
+{summary_block}
+
+Task:
+Provide a short, professional summary of what this file likely is,
+what kind of artifacts were found, and whether anything looks
+potentially security-relevant.
+
+Do not invent findings. Base your answer only on the data above.
+Keep the answer under 200 words.
+"""
+
+    return prompt.strip()
+
+def ollama_generate(url, model, prompt, timeout=30):
+    """
+    Call Ollama generate API.
+    Returns text or raises RuntimeError.
+    """
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    req = urllib.request.Request(
+        url.rstrip("/") + "/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("response", "").strip()
+    except Exception as e:
+        raise RuntimeError(str(e))
+
+# --- TUI ---
 def get_tree_arrows():
     """
     Return safe expand/collapse arrows depending on terminal support.
@@ -399,8 +540,6 @@ def search_keywords(binary, keywords, progress_cb=None):
 
     progress_cb(phase, progress)
     """
-    from collections import defaultdict
-    import re
 
     results = defaultdict(list)
 
@@ -715,6 +854,10 @@ def od_bc_view(data, offset, keyword, context=64):
 # ---------------- TUI -----------------
 class HexwalkTUI:
     def __init__(self, stdscr, binary, filename, file_path, keywords, show_all=False):
+
+        # ---------- Configuration state ----------
+        self.config = load_config()
+
         # ---------- Core state ----------
         self.stdscr = stdscr
         self.binary = binary
@@ -722,6 +865,22 @@ class HexwalkTUI:
         self.file_path = file_path
         self.keywords = keywords
         self.show_all = show_all
+
+        # ---------- Ollama state ----------
+        self.ollama_ok = False
+        self.ollama_models = []
+        self.ollama_error = None
+
+        ollama_cfg = self.config.get("ollama", {})
+
+        if ollama_cfg.get("enabled"):
+            ok, models, err = probe_ollama(
+                ollama_cfg.get("url", ""),
+                ollama_cfg.get("timeout", 5),
+            )
+            self.ollama_ok = ok
+            self.ollama_models = models
+            self.ollama_error = err
     
         # ---------- Initialize ----------
         self.stdscr.clear()
@@ -962,6 +1121,850 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
+    def edit_text_modal(self, title, initial_text):
+        import curses
+        import curses.ascii
+    
+        lines = initial_text.splitlines()
+        if not lines:
+            lines = [""]
+    
+        y = 0          # cursor line
+        x = 0          # cursor column
+        scroll = 0     # vertical scroll offset
+    
+        h, w = self.stdscr.getmaxyx()
+        mh = min(h - 4, 20)
+        mw = min(w - 4, 80)
+        sy = (h - mh) // 2
+        sx = (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, sy, sx)
+        win.keypad(True)
+        curses.curs_set(1)
+    
+        TEXT_H = mh - 4
+    
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+    
+            # Draw text
+            for i in range(TEXT_H):
+                li = scroll + i
+                if li >= len(lines):
+                    break
+                win.addstr(2 + i, 2, lines[li][:mw - 4])
+    
+            # Place cursor
+            cy = y - scroll
+            if 0 <= cy < TEXT_H:
+                win.move(2 + cy, 2 + min(x, mw - 5))
+    
+            win.addstr(
+                mh - 2,
+                2,
+                "[Ctrl+S] Save   [Esc] Cancel",
+                curses.A_DIM
+            )
+    
+            win.refresh()
+            key = win.getch()
+    
+            # ---------- Exit ----------
+            if key == 27:  # ESC
+                curses.curs_set(0)
+                return None
+    
+            if key == 19:  # Ctrl+S
+                curses.curs_set(0)
+                return "\n".join(lines)
+    
+            # ---------- Navigation ----------
+            if key == curses.KEY_UP:
+                if y > 0:
+                    y -= 1
+                    x = min(x, len(lines[y]))
+                elif scroll > 0:
+                    scroll -= 1
+    
+            elif key == curses.KEY_DOWN:
+                if y < len(lines) - 1:
+                    y += 1
+                    x = min(x, len(lines[y]))
+                    if y - scroll >= TEXT_H:
+                        scroll += 1
+    
+            elif key == curses.KEY_LEFT:
+                if x > 0:
+                    x -= 1
+                elif y > 0:
+                    y -= 1
+                    x = len(lines[y])
+    
+            elif key == curses.KEY_RIGHT:
+                if x < len(lines[y]):
+                    x += 1
+                elif y + 1 < len(lines):
+                    y += 1
+                    x = 0
+    
+            # ---------- Editing ----------
+            elif key in (
+                curses.KEY_BACKSPACE,
+                curses.ascii.BS,
+                curses.ascii.DEL,
+            ):
+                if x > 0:
+                    lines[y] = lines[y][:x - 1] + lines[y][x:]
+                    x -= 1
+                elif y > 0:
+                    prev_len = len(lines[y - 1])
+                    lines[y - 1] += lines[y]
+                    del lines[y]
+                    y -= 1
+                    x = prev_len
+    
+            elif key == curses.KEY_DC:
+                if x < len(lines[y]):
+                    lines[y] = lines[y][:x] + lines[y][x + 1:]
+                elif y + 1 < len(lines):
+                    lines[y] += lines[y + 1]
+                    del lines[y + 1]
+    
+            elif key in (10, 13):  # Enter → new line
+                rest = lines[y][x:]
+                lines[y] = lines[y][:x]
+                lines.insert(y + 1, rest)
+                y += 1
+                x = 0
+                if y - scroll >= TEXT_H:
+                    scroll += 1
+    
+            elif curses.ascii.isprint(key):
+                lines[y] = lines[y][:x] + chr(key) + lines[y][x:]
+                x += 1
+
+    def edit_prompt_modal(self, prompt_id):
+        import curses
+        import textwrap
+    
+        prompts = self.config.setdefault("prompts", {})
+    
+        if prompt_id not in prompts:
+            return
+    
+        prompt = prompts[prompt_id]
+        name = prompt.get("name", "")
+        text = prompt.get("text", "")
+    
+        h, w = self.stdscr.getmaxyx()
+        mh, mw = min(22, h - 4), min(90, w - 4)
+        y, x = (h - mh) // 2, (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+        curses.curs_set(1)
+    
+        # ---- Editor state ----
+        mode = "name"  # or "text"
+        name_buf = list(name)
+        lines = text.splitlines() or [""]
+    
+        cy, cx = 0, 0
+    
+        while True:
+            win.erase()
+            win.box()
+    
+            # ---- Labels ----
+            win.addstr(1, 2, "Name:", curses.A_BOLD)
+            win.addstr(3, 2, "Prompt:", curses.A_BOLD)
+    
+            # ---- Name field ----
+            win.addstr(1, 8, "".join(name_buf)[:mw - 10])
+    
+            # ---- Wrap prompt text ----
+            wrapped = []
+            wrap_map = []  # maps wrapped row → (line index, col offset)
+    
+            for li, line in enumerate(lines):
+                chunks = textwrap.wrap(
+                    line,
+                    mw - 6,
+                    replace_whitespace=False,
+                    drop_whitespace=False
+                ) or [""]
+    
+                for ci, chunk in enumerate(chunks):
+                    wrapped.append(chunk)
+                    wrap_map.append((li, ci))
+    
+            # ---- Render prompt ----
+            max_rows = mh - 8
+            for i, row in enumerate(wrapped[:max_rows]):
+                win.addstr(4 + i, 4, row)
+    
+            # ---- Footer (commands) ----
+            footer = "[Tab] Switch Field   [Enter] Save   [Esc] Cancel"
+            win.addstr(mh - 2, 2, footer[:mw - 4])
+    
+            # ---- Cursor placement (LAST) ----
+            if mode == "name":
+                cx_vis = min(len(name_buf), mw - 12)
+                win.move(1, 8 + cx_vis)
+            else:
+                wy = sum(
+                    len(
+                        textwrap.wrap(
+                            lines[i],
+                            mw - 6,
+                            replace_whitespace=False,
+                            drop_whitespace=False
+                        ) or [""]
+                    )
+                    for i in range(cy)
+                )
+                wx = min(cx, mw - 7)
+                win.move(4 + wy, 4 + wx)
+    
+            win.refresh()
+            ch = win.getch()
+    
+            # ---- Global controls ----
+            if ch == 27:  # ESC
+                curses.curs_set(0)
+                return
+    
+            elif ch in (10, 13):  # ENTER = save
+                break
+    
+            elif ch == 9:  # TAB
+                mode = "text" if mode == "name" else "name"
+    
+            # ---- Name edit ----
+            elif mode == "name":
+                if ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if name_buf:
+                        name_buf.pop()
+                elif 32 <= ch <= 126:
+                    name_buf.append(chr(ch))
+    
+            # ---- Prompt edit ----
+            else:
+                if ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if cx > 0:
+                        lines[cy] = lines[cy][:cx - 1] + lines[cy][cx:]
+                        cx -= 1
+                    elif cy > 0:
+                        cx = len(lines[cy - 1])
+                        lines[cy - 1] += lines[cy]
+                        del lines[cy]
+                        cy -= 1
+    
+                elif ch == curses.KEY_LEFT:
+                    if cx > 0:
+                        cx -= 1
+                    elif cy > 0:
+                        cy -= 1
+                        cx = len(lines[cy])
+    
+                elif ch == curses.KEY_RIGHT:
+                    if cx < len(lines[cy]):
+                        cx += 1
+                    elif cy < len(lines) - 1:
+                        cy += 1
+                        cx = 0
+    
+                elif ch == curses.KEY_UP:
+                    if cy > 0:
+                        cy -= 1
+                        cx = min(cx, len(lines[cy]))
+    
+                elif ch == curses.KEY_DOWN:
+                    if cy < len(lines) - 1:
+                        cy += 1
+                        cx = min(cx, len(lines[cy]))
+    
+                elif 32 <= ch <= 126:
+                    lines[cy] = lines[cy][:cx] + chr(ch) + lines[cy][cx:]
+                    cx += 1
+    
+        curses.curs_set(0)
+    
+        # ---- Save back (ID unchanged) ----
+        prompt["name"] = "".join(name_buf).strip()
+        prompt["text"] = "\n".join(lines)
+
+    def show_prompt_manager_modal(self):
+        import curses
+    
+        prompts = self.config.setdefault("prompts", {})
+        active = self.config.get("active_prompt")
+    
+        if not prompts:
+            prompts["default"] = {
+                "name": "Default",
+                "text": "Analyze the following findings."
+            }
+            self.config["active_prompt"] = "default"
+            active = "default"
+    
+        keys = list(prompts.keys())
+        sel = keys.index(active) if active in keys else 0
+    
+        h, w = self.stdscr.getmaxyx()
+        mh, mw = min(20, h - 4), min(80, w - 4)
+        y, x = (h - mh) // 2, (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+    
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, "Prompt Manager", curses.A_BOLD)
+    
+            for i, key in enumerate(keys):
+                prompt = prompts[key]
+                label = prompt["name"]
+                suffix = " (active)" if key == active else ""
+                attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
+                win.addstr(3 + i, 4, f"{label}{suffix}", attr)
+    
+            footer = "[Enter] Edit  [a] Add  [d] Delete  [Space] Activate  [q] Back"
+            win.addstr(mh - 2, 2, footer[:mw - 4])
+            win.refresh()
+    
+            ch = win.getch()
+    
+            if ch == curses.KEY_UP:
+                sel = max(0, sel - 1)
+            elif ch == curses.KEY_DOWN:
+                sel = min(len(keys) - 1, sel + 1)
+    
+            elif ch in (10, 13):  # Edit
+                self.edit_prompt_modal(keys[sel])
+                keys = list(prompts.keys())
+    
+            elif ch == ord(" "):  # Set active
+                self.config["active_prompt"] = keys[sel]
+                self.config["ollama"]["active_prompt"] = keys[sel]
+                active = keys[sel]
+    
+            elif ch == ord("a"):
+                self.edit_prompt_modal()
+                keys = list(prompts.keys())
+                sel = len(keys) - 1
+    
+            elif ch == ord("d"):
+                key = keys[sel]
+                if len(keys) > 1:
+                    del prompts[key]
+                    if active == key:
+                        active = keys[0]
+                        self.config["active_prompt"] = active
+                    keys = list(prompts.keys())
+                    sel = max(0, sel - 1)
+    
+            elif ch in (ord("q"), 27):
+                break
+
+    def show_model_select_modal(self):
+        import curses
+        import json
+        import urllib.request
+    
+        url = self.config["ollama"]["url"].rstrip("/") + "/api/tags"
+    
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                models = [m["name"] for m in json.loads(r.read())["models"]]
+        except Exception:
+            return None
+    
+        sel = 0
+    
+        h, w = self.stdscr.getmaxyx()
+        mw = min(60, w - 4)
+        mh = min(15, h - 4)
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+    
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, "Select Ollama Model", curses.A_BOLD)
+    
+            for i, m in enumerate(models[: mh - 6]):
+                attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
+                win.addstr(3 + i, 4, m, attr)
+    
+            win.addstr(mh - 2, 2, "[↑↓] Move  [Enter] Select  [q] Cancel")
+            win.refresh()
+    
+            key = win.getch()
+            if key == curses.KEY_UP:
+                sel = max(0, sel - 1)
+            elif key == curses.KEY_DOWN:
+                sel = min(len(models) - 1, sel + 1)
+            elif key in (10, 13):
+                return models[sel]
+            elif key in (ord("q"), 27):
+                return None
+
+    def edit_single_line(self, title, value):
+        import curses
+        import curses.ascii
+    
+        buf = list(value)
+        pos = len(buf)  # cursor at end
+    
+        h, w = self.stdscr.getmaxyx()
+        mh = 7
+        mw = min(80, w - 4)
+        sy = (h - mh) // 2
+        sx = (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, sy, sx)
+        win.keypad(True)
+        curses.curs_set(1)
+    
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+    
+            text = "".join(buf)
+            win.addstr(3, 2, text[:mw - 4])
+            win.move(3, 2 + min(pos, mw - 5))
+    
+            win.addstr(mh - 2, 2, "[Enter] Save   [Esc] Cancel")
+            win.refresh()
+    
+            key = win.getch()
+    
+            # ESC
+            if key == 27:
+                curses.curs_set(0)
+                return None
+    
+            # ENTER
+            if key in (10, 13):
+                curses.curs_set(0)
+                return "".join(buf)
+    
+            # LEFT / RIGHT
+            if key == curses.KEY_LEFT:
+                pos = max(0, pos - 1)
+            elif key == curses.KEY_RIGHT:
+                pos = min(len(buf), pos + 1)
+    
+            # BACKSPACE (ALL variants)
+            elif key in (
+                curses.KEY_BACKSPACE,
+                curses.ascii.BS,     # Ctrl+H (8)
+                curses.ascii.DEL,    # 127
+            ):
+                if pos > 0:
+                    buf.pop(pos - 1)
+                    pos -= 1
+    
+            # DELETE
+            elif key == curses.KEY_DC:
+                if pos < len(buf):
+                    buf.pop(pos)
+    
+            # HOME / END
+            elif key == curses.KEY_HOME:
+                pos = 0
+            elif key == curses.KEY_END:
+                pos = len(buf)
+    
+            # PRINTABLE CHAR
+            elif curses.ascii.isprint(key):
+                buf.insert(pos, chr(key))
+                pos += 1
+
+    def show_busy_modal(self, title, message):
+        """
+        Simple centered modal indicating a blocking operation.
+        """
+        h, w = self.stdscr.getmaxyx()
+        mw = min(60, w - 4)
+        mh = 7
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+        win.erase()
+        win.box()
+
+        win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+        win.addstr(3, 2, message[:mw - 4])
+        win.refresh()
+
+        return win
+
+    def show_config_modal(self):
+        import curses
+    
+        # ---- Ensure config structure ----
+        cfg = self.config.setdefault("ollama", {})
+        cfg.setdefault("enabled", False)
+        cfg.setdefault("url", "http://localhost:11434")
+        cfg.setdefault("model", "")
+        cfg.setdefault("timeout", 5)
+        cfg.setdefault("prompts", {
+            "Default": "You are a cybersecurity analyst.\n\nFindings:\n{findings}\n\nSummarize risks."
+        })
+        cfg.setdefault("active_prompt", "Default")
+    
+        items = [
+            ("Enable",   "toggle"),
+            ("URL",      "url"),
+            ("Model",    "model"),
+            ("Timeout",  "timeout"),
+            ("Prompt",   "prompt"),
+        ]
+    
+        sel = 0
+    
+        h, w = self.stdscr.getmaxyx()
+        mw = min(80, w - 4)
+        mh = min(18, h - 4)
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+    
+        while True:
+            win.erase()
+            win.box()
+    
+            win.addstr(1, 2, "HexWalk Configuration – Ollama", curses.A_BOLD)
+    
+            # ---- Render items ----
+            for i, (label, key) in enumerate(items):
+                attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
+    
+                if key == "toggle":
+                    val = "ON" if cfg["enabled"] else "OFF"
+                elif key == "url":
+                    val = cfg["url"]
+                elif key == "model":
+                    val = cfg["model"] or "<not set>"
+                elif key == "timeout":
+                    val = f"{cfg['timeout']}s"
+                elif key == "prompt":
+                    pid = self.config.get("active_prompt")
+                    prompt = self.config.get("prompts", {}).get(pid, {})
+                    val = prompt.get("name", "<none>")
+
+    
+                line = f"{label:<8}: {val}"
+                win.addstr(3 + i, 4, line[:mw - 8], attr)
+    
+            footer = "[↑↓] Move  [Enter] Edit  [s] Save  [q] Cancel"
+            win.addstr(mh - 2, 2, footer[:mw - 4])
+    
+            win.refresh()
+            key = win.getch()
+    
+            # ---- Navigation ----
+            if key == curses.KEY_UP:
+                sel = max(0, sel - 1)
+            elif key == curses.KEY_DOWN:
+                sel = min(len(items) - 1, sel + 1)
+    
+            # ---- Activate / edit ----
+            elif key in (10, 13):  # Enter
+                _, item = items[sel]
+    
+                if item == "toggle":
+                    cfg["enabled"] = not cfg["enabled"]
+    
+                elif item == "url":
+                    new = self.edit_single_line("Edit Ollama URL", cfg["url"])
+                    if new is not None:
+                        cfg["url"] = new.strip()
+    
+                elif item == "timeout":
+                    new = self.edit_single_line(
+                        "Edit Timeout (seconds)",
+                        str(cfg["timeout"])
+                    )
+                    if new and new.isdigit():
+                        cfg["timeout"] = int(new)
+    
+                elif item == "model":
+                    model = self.show_model_select_modal()
+                    if model:
+                        cfg["model"] = model
+    
+                elif item == "prompt":
+                    self.show_prompt_manager_modal()
+
+    
+            # ---- Save ----
+            elif key == ord("s"):
+                save_config(self.config)
+                break
+    
+            # ---- Cancel ----
+            elif key in (ord("q"), 27):
+                break
+
+
+    def prompt_input(self, title, initial, parent):
+        h, w = parent.getmaxyx()
+        parent.clear()
+        parent.box()
+    
+        prompt = f"{title}: "
+        parent.addstr(2, 2, prompt)
+        curses.echo()
+        parent.refresh()
+    
+        val = parent.getstr(2, 2 + len(prompt), w - len(prompt) - 4)
+        curses.noecho()
+    
+        try:
+            return val.decode("utf-8").strip()
+        except Exception:
+            return initial
+
+    def show_text_modal(self, title, text="", editable=False, single_line=False, footer="[q] Close", on_key=None):
+
+        import curses
+        import textwrap
+    
+        h, w = self.stdscr.getmaxyx()
+        mw = min(80, w - 4)
+        mh = min(24, h - 4)
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+    
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+        curses.curs_set(1 if editable else 0)
+    
+        buffer = text.splitlines() or [""]
+        cy = 0
+    
+        while True:
+            win.erase()
+            win.box()
+    
+            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+    
+            wrapped = []
+            for line in buffer:
+                wrapped.extend(textwrap.wrap(line, mw - 4) or [""])
+    
+            visible = wrapped[: mh - 6]
+            for i, line in enumerate(visible):
+                win.addstr(3 + i, 2, line)
+    
+            win.addstr(mh - 2, 2, footer[:mw - 4])
+            win.refresh()
+    
+            key = win.getch()
+    
+            if key in (ord("q"), 27):
+                curses.curs_set(0)
+                return None if editable else text
+    
+            if editable:
+                if key in (10, 13):
+                    curses.curs_set(0)
+                    return "\n".join(buffer)
+                elif key == curses.KEY_BACKSPACE or key == 127:
+                    if buffer and buffer[-1]:
+                        buffer[-1] = buffer[-1][:-1]
+                elif 32 <= key <= 126:
+                    if single_line:
+                        buffer[-1] += chr(key)
+                    else:
+                        buffer[-1] += chr(key)
+
+    def get_active_prompt(self):
+        ollama = self.config.get("ollama", {})
+        prompts = ollama.get("prompts", {})
+        active = ollama.get("active_prompt")
+
+        if active and active in prompts:
+            return prompts[active]
+
+        # fallback
+        return next(iter(prompts.values()), None)
+
+    def save_ai_output(self, text):
+        """
+        Save AI analysis output to a file.
+        """
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"hexwalk_{self.filename}_ai_{ts}.txt"
+
+        try:
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(text)
+            return f"Saved AI output to {fname}"
+        except Exception as e:
+            return f"Failed to save AI output: {e}"
+
+    def run_ai_analysis(self):
+        import json
+        import urllib.request
+        import urllib.error
+        import textwrap
+    
+        cfg = self.config.get("ollama", {})
+        url = cfg.get("url")
+        model = cfg.get("model")
+        timeout = cfg.get("timeout", 30)
+        prompt_tpl = self.get_active_prompt()
+    
+        if not url or not model:
+            return "Ollama is not configured."
+    
+        # ---------------------------------------------
+        # Build prompt
+        # ---------------------------------------------
+        if not prompt_tpl:
+            prompt_tpl = (
+                "You are a cybersecurity analyst.\n"
+                "Analyze the following extracted findings.\n\n"
+                "{findings}\n\n"
+                "Provide a concise security-focused assessment."
+            )
+    
+        lines = []
+        max_items = 5000
+        count = 0
+    
+        for cat, hits in self.findings.items():
+            if not hits:
+                continue
+            lines.append(f"{cat}:")
+            for h in hits:
+                lines.append(f"  - {h['match_key']} @ {h['context']['offset']}")
+                count += 1
+                if count >= max_items:
+                    lines.append("  ... truncated ...")
+                    break
+            if count >= max_items:
+                break
+    
+        prompt = prompt_tpl.format(findings="\n".join(lines))
+    
+        # ---------------------------------------------
+        # Modal setup
+        # ---------------------------------------------
+        modal = self.show_busy_modal("AI Analysis", "Waiting for model output…")
+        content = []
+        offset = 0
+    
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True,
+        }
+    
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/generate",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+    
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                for raw in resp:
+                    obj = json.loads(raw.decode())
+                    token = obj.get("response")
+                    if not token:
+                        continue
+    
+                    content.append(token)
+    
+                    # ---------- redraw modal ----------
+                    modal.erase()
+                    modal.box()
+                    modal.addstr(1, 2, "AI Analysis (streaming)", curses.A_BOLD)
+    
+                    text = "".join(content)
+                    wrapped = []
+                    for ln in text.splitlines():
+                        wrapped.extend(textwrap.wrap(ln, modal.getmaxyx()[1] - 4) or [""])
+    
+                    max_lines = modal.getmaxyx()[0] - 4
+                    visible = wrapped[-max_lines:]
+    
+                    for i, ln in enumerate(visible):
+                        modal.addstr(2 + i, 2, ln)
+    
+                    modal.refresh()
+    
+        except Exception as e:
+            return f"AI error:\n{e}"
+    
+        return "".join(content)
+
+    def show_ai_summary_modal(self, ai_text):
+        """
+        Display AI-generated analysis in a scrollable modal.
+        """
+        if not ai_text or not ai_text.strip():
+            ai_text = "No AI output available."
+
+        self.show_text_modal(
+            title="AI Summary",
+            text=ai_text,
+            footer="[↑↓ PgUp PgDn] Scroll   [s] Save   [q] Close",
+            on_key=lambda k: self.save_ai_output(ai_text) if k == ord("s") else None
+        )
+    
+    def select_from_list(self, title, options, current):
+        h, w = self.stdscr.getmaxyx()
+        modal_h = min(10, h - 4)
+        modal_w = 50
+        modal_y = (h - modal_h) // 2
+        modal_x = (w - modal_w) // 2
+    
+        win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
+        win.keypad(True)
+    
+        idx = options.index(current) if current in options else 0
+    
+        while True:
+            win.clear()
+            win.box()
+            win.addstr(0, 2, f" {title} ", curses.A_BOLD)
+    
+            for i, opt in enumerate(options[: modal_h - 4]):
+                attr = curses.A_REVERSE if i == idx else curses.A_NORMAL
+                win.addstr(2 + i, 2, opt[: modal_w - 4], attr)
+    
+            win.refresh()
+            key = win.getch()
+    
+            if key in (10, 13):
+                return options[idx]
+            elif key == 27:
+                return current
+            elif key == curses.KEY_UP:
+                idx = max(0, idx - 1)
+            elif key == curses.KEY_DOWN:
+                idx = min(len(options) - 1, idx + 1)
+
     def confirm_quit(self):
         # --------------------------------------------------
         # Clear and redraw background cleanly
@@ -1072,7 +2075,6 @@ class HexwalkTUI:
         Each node includes hit counts and expansion state.
         """
     
-        from collections import defaultdict
     
         tree = []
         tree_filter = self.tree_filter.lower() if self.tree_filter else None
@@ -2046,6 +3048,12 @@ class HexwalkTUI:
                 self.show_help()
 
             # ==================================================
+            # CONFIGURATION MODAL
+            # ==================================================
+            elif key == ord("c"):
+                self.show_config_modal()
+
+            # ==================================================
             # EXPAND / COLLAPSE ALL
             # ==================================================
             elif key == ord("+"):
@@ -2234,6 +3242,14 @@ class HexwalkTUI:
     
             elif key == ord("]"):
                 self.details_width = min(120, self.details_width + 4)
+
+            # ==================================================
+            # AI SUMMARY PANE
+            # ==================================================
+            elif key == ord("a") and self.ollama_ok:
+                ai_output = self.run_ai_analysis()
+                self.show_ai_summary_modal(ai_output)
+
 
 # ---------------- PROGRESS BAR -----------------
 
