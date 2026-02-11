@@ -119,17 +119,143 @@ def default_config():
             "enabled": False,
             "url": "http://localhost:11434",
             "model": "",
-            "timeout": 5,
+            "timeout": 30,
         },
         "prompts": {
+
+            # --------------------------------------------------
+            # 0 — Concise Security Summary
+            # --------------------------------------------------
             "0": {
-                "name": "Default security analysis",
+                "name": "Concise security summary",
                 "text": (
-                    "Analyze the following findings and provide a concise "
-                    "security-focused summary."
+                    "You are a cybersecurity analyst.\n\n"
+                    "Analyze the provided findings and generate a concise, "
+                    "evidence-based security assessment.\n\n"
+                    "Requirements:\n"
+                    "- Base conclusions only on provided findings.\n"
+                    "- Do not invent artifacts.\n"
+                    "- Keep response under 200 words.\n"
+                    "- Maintain professional technical tone."
+                ),
+            },
+
+            # --------------------------------------------------
+            # 1 — Extended Structured Report
+            # --------------------------------------------------
+            "1": {
+                "name": "Extended structured security report",
+                "text": (
+                    "You are a senior cybersecurity analyst.\n\n"
+                    "Produce a structured technical assessment report.\n\n"
+                    "STRICT OUTPUT FORMAT:\n\n"
+                    "1. Executive Summary\n"
+                    "2. File Characterization\n"
+                    "3. Findings Overview\n"
+                    "4. Category Analysis (alphabetical)\n"
+                    "5. Potential Security Concerns\n"
+                    "6. Limitations of Analysis\n"
+                    "7. Recommended Next Steps\n\n"
+                    "Constraints:\n"
+                    "- Maximum 600 words\n"
+                    "- No markdown\n"
+                    "- No speculation\n"
+                    "- Maintain consistent structure"
+                ),
+            },
+
+            # --------------------------------------------------
+            # 2 — Deterministic Risk Scoring Report
+            # --------------------------------------------------
+            "2": {
+                "name": "Risk scoring assessment",
+                "text": (
+                    "You are a cybersecurity risk analyst.\n\n"
+                    "Analyze findings and produce a structured risk assessment.\n\n"
+                    "Output sections (exact order):\n"
+                    "1. Summary\n"
+                    "2. Risk Indicators\n"
+                    "3. Overall Risk Score (0–5 scale)\n"
+                    "4. Confidence Level (Low/Medium/High)\n"
+                    "5. Justification\n\n"
+                    "Scoring Rules:\n"
+                    "- 0 = No meaningful indicators\n"
+                    "- 1 = Informational artifacts\n"
+                    "- 2 = Low-signal artifacts\n"
+                    "- 3 = Moderate security relevance\n"
+                    "- 4 = High-signal security indicators\n"
+                    "- 5 = Strong indicators of sensitive or security-critical material\n\n"
+                    "Do not exceed 400 words.\n"
+                    "Do not speculate beyond provided data."
+                ),
+            },
+
+            # --------------------------------------------------
+            # 3 — Firmware-Focused Analysis
+            # --------------------------------------------------
+            "3": {
+                "name": "Firmware-oriented analysis",
+                "text": (
+                    "You are an embedded systems security specialist.\n\n"
+                    "Assess findings with focus on firmware and embedded systems context.\n\n"
+                    "Include:\n"
+                    "- Indicators of embedded platforms\n"
+                    "- Configuration artifacts\n"
+                    "- Hardcoded credentials or secrets\n"
+                    "- Update mechanisms\n"
+                    "- Debug interfaces\n\n"
+                    "Do not speculate.\n"
+                    "Keep analysis technical and under 500 words."
+                ),
+            },
+
+            # --------------------------------------------------
+            # 4 — Machine-Readable JSON Report
+            # --------------------------------------------------
+            "4": {
+                "name": "Structured JSON report",
+                "text": (
+                    "You are a cybersecurity analysis engine.\n\n"
+                    "Produce strictly valid JSON output.\n\n"
+                    "Required JSON structure:\n"
+                    "{\n"
+                    "  \"summary\": \"...\",\n"
+                    "  \"file_characterization\": \"...\",\n"
+                    "  \"total_findings\": number,\n"
+                    "  \"high_signal_categories\": [\"...\"],\n"
+                    "  \"risk_score\": number (0-5),\n"
+                    "  \"confidence\": \"Low|Medium|High\",\n"
+                    "  \"recommended_actions\": [\"...\"]\n"
+                    "}\n\n"
+                    "Rules:\n"
+                    "- Output ONLY JSON\n"
+                    "- No markdown\n"
+                    "- No commentary\n"
+                    "- No trailing commas"
+                ),
+            },
+
+            # --------------------------------------------------
+            # 5 — Incident Triage Report
+            # --------------------------------------------------
+            "5": {
+                "name": "Incident triage assessment",
+                "text": (
+                    "You are a SOC incident analyst.\n\n"
+                    "Evaluate findings from an incident triage perspective.\n\n"
+                    "Output sections:\n"
+                    "1. Initial Assessment\n"
+                    "2. Indicators of Compromise (if any)\n"
+                    "3. Suspicious Artifacts\n"
+                    "4. Likely Benign Indicators\n"
+                    "5. Escalation Recommendation (Yes/No)\n"
+                    "6. Justification\n\n"
+                    "Do not speculate beyond evidence.\n"
+                    "Maintain neutral professional tone."
                 ),
             }
         },
+
         "active_prompt": "0",
     }
 
@@ -178,43 +304,6 @@ def probe_ollama(url, timeout=5):
         return False, [], str(e.reason)
     except Exception as e:
         return False, [], str(e)
-
-def build_ai_summary_prompt(filename, findings):
-    """
-    Build a concise, bounded prompt for AI summarization.
-    """
-    lines = []
-    total_hits = 0
-
-    for cat, hits in findings.items():
-        count = len(hits)
-        total_hits += count
-        lines.append(f"- {cat}: {count} hits")
-
-    summary_block = "\n".join(lines)
-
-    prompt = f"""
-You are a security analysis assistant.
-
-The following file was analyzed:
-File name: {filename}
-
-Scan results:
-Total hits: {total_hits}
-
-Breakdown by category:
-{summary_block}
-
-Task:
-Provide a short, professional summary of what this file likely is,
-what kind of artifacts were found, and whether anything looks
-potentially security-relevant.
-
-Do not invent findings. Base your answer only on the data above.
-Keep the answer under 200 words.
-"""
-
-    return prompt.strip()
 
 def ollama_generate(url, model, prompt, timeout=30):
     """
@@ -1487,16 +1576,22 @@ class HexwalkTUI:
         except Exception:
             return None
     
+        if not models:
+            return None
+    
         sel = 0
+        offset = 0
     
         h, w = self.stdscr.getmaxyx()
-        mw = min(60, w - 4)
-        mh = min(15, h - 4)
+        mw = min(70, w - 4)
+        mh = min(20, h - 4)
         y = (h - mh) // 2
         x = (w - mw) // 2
     
         win = curses.newwin(mh, mw, y, x)
         win.keypad(True)
+    
+        visible_rows = mh - 6  # title + footer + borders
     
         while True:
             win.erase()
@@ -1504,20 +1599,64 @@ class HexwalkTUI:
             draw_box(win, mh, mw, self.box)
             win.addstr(1, 2, "Select Ollama Model", curses.A_BOLD)
     
-            for i, m in enumerate(models[: mh - 6]):
-                attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
-                win.addstr(3 + i, 4, m, attr)
+            # ---- Scroll logic ----
+            if sel < offset:
+                offset = sel
+            elif sel >= offset + visible_rows:
+                offset = sel - visible_rows + 1
     
-            win.addstr(mh - 2, 2, "[↑↓] Move  [Enter] Select  [q] Cancel")
+            # ---- Render list ----
+            for row in range(visible_rows):
+                idx = offset + row
+                if idx >= len(models):
+                    break
+    
+                model_name = models[idx]
+                label = f"[{idx}] {model_name}"
+    
+                attr = curses.A_REVERSE if idx == sel else curses.A_NORMAL
+                win.addstr(3 + row, 4, label[:mw - 8], attr)
+    
+            # ---- Scrollbar ----
+            if len(models) > visible_rows:
+                bar_height = max(1, int(visible_rows * visible_rows / len(models)))
+                bar_pos = int(offset * visible_rows / len(models))
+    
+                for i in range(visible_rows):
+                    win.addch(3 + i, mw - 3, "│")
+    
+                for i in range(bar_height):
+                    if 0 <= bar_pos + i < visible_rows:
+                        win.addch(3 + bar_pos + i, mw - 3, "█")
+    
+            # ---- Footer ----
+            footer = "[↑↓ PgUp PgDn] Move  [Enter] Select  [q] Cancel"
+            win.addstr(mh - 2, 2, footer[:mw - 4])
+    
             win.refresh()
-    
             key = win.getch()
+    
             if key == curses.KEY_UP:
                 sel = max(0, sel - 1)
+    
             elif key == curses.KEY_DOWN:
                 sel = min(len(models) - 1, sel + 1)
+    
+            elif key == curses.KEY_PPAGE:  # Page Up
+                sel = max(0, sel - visible_rows)
+    
+            elif key == curses.KEY_NPAGE:  # Page Down
+                sel = min(len(models) - 1, sel + visible_rows)
+    
+            elif key == curses.KEY_HOME:
+                sel = 0
+    
+            elif key == curses.KEY_END:
+                sel = len(models) - 1
+    
             elif key in (10, 13):
                 return models[sel]
+    
             elif key in (ord("q"), 27):
                 return None
 
@@ -1747,60 +1886,88 @@ class HexwalkTUI:
         except Exception:
             return initial
 
-    def show_text_modal(self, title, text="", editable=False, single_line=False, footer="[q] Close", on_key=None):
-
+    def show_text_modal( self, title, text="", editable=False, single_line=False, footer="[q] Close", on_key=None,):
         import curses
         import textwrap
     
         h, w = self.stdscr.getmaxyx()
-        mw = min(80, w - 4)
-        mh = min(24, h - 4)
+        mh = min(30, h - 4)
+        mw = min(110, w - 4)
         y = (h - mh) // 2
         x = (w - mw) // 2
     
         win = curses.newwin(mh, mw, y, x)
         win.keypad(True)
-        curses.curs_set(1 if editable else 0)
     
-        buffer = text.splitlines() or [""]
-        cy = 0
+        offset = 0
+        content_height = mh - 6
+        content_width = mw - 6  # leave space for scrollbar
     
         while True:
+            # ---- Re-wrap every redraw (safe for dynamic resize)
+            wrapped = []
+            for line in (text.splitlines() or [""]):
+                wrapped.extend(textwrap.wrap(line, content_width) or [""])
+    
+            max_offset = max(0, len(wrapped) - content_height)
+            offset = max(0, min(offset, max_offset))
+    
             win.erase()
             win.box()
             draw_box(win, mh, mw, self.box)
     
-            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+            win.addstr(1, 2, title, curses.A_BOLD)
     
-            wrapped = []
-            for line in buffer:
-                wrapped.extend(textwrap.wrap(line, mw - 4) or [""])
+            # ---- Render content
+            for i in range(content_height):
+                idx = offset + i
+                if idx < len(wrapped):
+                    win.addstr(3 + i, 2, wrapped[idx][:content_width])
     
-            visible = wrapped[: mh - 6]
-            for i, line in enumerate(visible):
-                win.addstr(3 + i, 2, line)
+            # ---- Scrollbar
+            if len(wrapped) > content_height:
+                bar_height = max(
+                    1, int(content_height * content_height / len(wrapped))
+                )
+                bar_pos = int(offset * content_height / len(wrapped))
     
-            win.addstr(mh - 2, 2, footer[:mw - 4])
+                for i in range(content_height):
+                    win.addch(3 + i, mw - 3, "│")
+    
+                for i in range(bar_height):
+                    if 0 <= bar_pos + i < content_height:
+                        win.addch(3 + bar_pos + i, mw - 3, "█")
+    
+            win.addstr(mh - 2, 2, footer[: mw - 4])
+    
             win.refresh()
-    
             key = win.getch()
     
-            if key in (ord("q"), 27):
-                curses.curs_set(0)
-                return None if editable else text
+            # ---- External key handler
+            if on_key:
+                on_key(key)
     
-            if editable:
-                if key in (10, 13):
-                    curses.curs_set(0)
-                    return "\n".join(buffer)
-                elif key == curses.KEY_BACKSPACE or key == 127:
-                    if buffer and buffer[-1]:
-                        buffer[-1] = buffer[-1][:-1]
-                elif 32 <= key <= 126:
-                    if single_line:
-                        buffer[-1] += chr(key)
-                    else:
-                        buffer[-1] += chr(key)
+            # ---- Default controls
+            if key in (ord("q"), 27):
+                break
+    
+            elif key == curses.KEY_UP:
+                offset -= 1
+    
+            elif key == curses.KEY_DOWN:
+                offset += 1
+    
+            elif key == curses.KEY_PPAGE:
+                offset -= content_height
+    
+            elif key == curses.KEY_NPAGE:
+                offset += content_height
+    
+            elif key == curses.KEY_HOME:
+                offset = 0
+    
+            elif key == curses.KEY_END:
+                offset = max_offset
 
     def get_active_prompt(self):
         ollama = self.config.get("ollama", {})
@@ -1813,76 +1980,173 @@ class HexwalkTUI:
         # fallback
         return next(iter(prompts.values()), None)
 
+    def build_configured_ai_prompt(self):
+        """
+        Build final AI prompt using configured prompt text
+        and structured findings summary.
+    
+        Returns full prompt string.
+        """
+    
+        # ---------------------------------------------
+        # Get configured prompt text
+        # ---------------------------------------------
+        prompts = self.config.get("prompts", {})
+        active_id = self.config.get("active_prompt")
+    
+        prompt_obj = prompts.get(active_id)
+        if not prompt_obj:
+            return "No active AI prompt configured."
+    
+        base_prompt = prompt_obj.get("text", "").strip()
+    
+        # ---------------------------------------------
+        # Build findings summary block
+        # ---------------------------------------------
+        lines = []
+        total_hits = 0
+    
+        for cat, hits in sorted(self.findings.items()):
+            count = len(hits)
+            if count == 0:
+                continue
+            total_hits += count
+            lines.append(f"- {cat}: {count} hits")
+    
+        summary_block = "\n".join(lines) if lines else "No findings detected."
+    
+        # ---------------------------------------------
+        # Compose final prompt
+        # ---------------------------------------------
+        final_prompt = f"""{base_prompt}
+    
+    File analyzed:
+    {self.filename}
+    
+    Total findings: {total_hits}
+    
+    Findings by category:
+    {summary_block}
+    
+    Instructions:
+    - Base your analysis strictly on the findings above.
+    - Do not invent artifacts.
+    - Provide a concise professional assessment.
+    - Keep the response under 200 words.
+    """
+    
+        return final_prompt.strip()
+
+
     def save_ai_output(self, text):
         """
-        Save AI analysis output to a file.
+        Save AI analysis output to current working directory.
         """
+    
         import datetime
+        import os
+    
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"hexwalk_{self.filename}_ai_{ts}.txt"
-
+    
+        safe_name = os.path.basename(self.filename) if hasattr(self, "filename") else "output"
+    
+        fname = f"hexwalk_{safe_name}_ai_{ts}.txt"
+        full_path = os.path.abspath(fname)
+    
         try:
             with open(fname, "w", encoding="utf-8") as f:
                 f.write(text)
-            return f"Saved AI output to {fname}"
+    
+            self.show_text_modal(
+                title="Saved",
+                text=f"AI output saved to:\n\n{full_path}",
+                footer="[q] Close"
+            )
+    
         except Exception as e:
-            return f"Failed to save AI output: {e}"
+            self.show_text_modal(
+                title="Save Failed",
+                text=str(e),
+                footer="[q] Close"
+            )
 
     def run_ai_analysis(self):
         import json
         import urllib.request
         import urllib.error
         import textwrap
+        import curses
     
         cfg = self.config.get("ollama", {})
         url = cfg.get("url")
         model = cfg.get("model")
         timeout = cfg.get("timeout", 30)
-        prompt_tpl = self.get_active_prompt()
     
         if not url or not model:
             return "Ollama is not configured."
     
-        # ---------------------------------------------
-        # Build prompt
-        # ---------------------------------------------
-        if not prompt_tpl:
-            prompt_tpl = (
-                "You are a cybersecurity analyst.\n"
-                "Analyze the following extracted findings.\n\n"
-                "{findings}\n\n"
-                "Provide a concise security-focused assessment."
-            )
+        # --------------------------------------------------
+        # Build prompt from configured prompt + findings
+        # --------------------------------------------------
+        prompts = self.config.get("prompts", {})
+        active_id = self.config.get("active_prompt")
+        prompt_obj = prompts.get(active_id)
     
+        if not prompt_obj:
+            return "No active AI prompt configured."
+    
+        base_prompt = prompt_obj.get("text", "").strip()
+    
+        # ----- Build findings summary -----
         lines = []
-        max_items = 5000
-        count = 0
+        total_hits = 0
     
-        for cat, hits in self.findings.items():
+        for cat, hits in sorted(self.findings.items()):
             if not hits:
                 continue
-            lines.append(f"{cat}:")
-            for h in hits:
-                lines.append(f"  - {h['match_key']} @ {h['context']['offset']}")
-                count += 1
-                if count >= max_items:
-                    lines.append("  ... truncated ...")
-                    break
-            if count >= max_items:
-                break
     
-        prompt = prompt_tpl.format(findings="\n".join(lines))
+            count = len(hits)
+            total_hits += count
+            lines.append(f"- {cat}: {count} hits")
     
-        # ---------------------------------------------
-        # Modal setup
-        # ---------------------------------------------
-        modal = self.show_busy_modal("AI Analysis", "Waiting for model output…")
+        summary_block = "\n".join(lines) if lines else "No findings detected."
+    
+        prompt = f"""{base_prompt}
+    
+    File analyzed:
+    {self.filename}
+    
+    Total findings: {total_hits}
+    
+    Findings by category:
+    {summary_block}
+    
+    Instructions:
+    - Base your analysis strictly on the findings above.
+    - Do not invent artifacts.
+    - Provide a concise professional assessment.
+    - Keep the response under 200 words.
+    """
+    
+        # --------------------------------------------------
+        # Large streaming modal
+        # --------------------------------------------------
+        h, w = self.stdscr.getmaxyx()
+    
+        mh = min(35, h - 4)
+        mw = min(120, w - 4)
+    
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+    
+        modal = curses.newwin(mh, mw, y, x)
+        modal.keypad(False)
+    
         content = []
-        offset = 0
     
         payload = {
             "model": model,
-            "prompt": prompt,
+            "prompt": prompt.strip(),
             "stream": True,
         }
     
@@ -1906,19 +2170,23 @@ class HexwalkTUI:
                     # ---------- redraw modal ----------
                     modal.erase()
                     modal.box()
-                    draw_box(win, mh, mw, self.box)
+                    h2, w2 = modal.getmaxyx()
+                    draw_box(modal, h2, w2, self.box)
+    
                     modal.addstr(1, 2, "AI Analysis (streaming)", curses.A_BOLD)
     
                     text = "".join(content)
                     wrapped = []
                     for ln in text.splitlines():
-                        wrapped.extend(textwrap.wrap(ln, modal.getmaxyx()[1] - 4) or [""])
+                        wrapped.extend(
+                            textwrap.wrap(ln, w2 - 4) or [""]
+                        )
     
-                    max_lines = modal.getmaxyx()[0] - 4
+                    max_lines = h2 - 4
                     visible = wrapped[-max_lines:]
     
                     for i, ln in enumerate(visible):
-                        modal.addstr(2 + i, 2, ln)
+                        modal.addstr(2 + i, 2, ln[:w2 - 4])
     
                     modal.refresh()
     
@@ -1926,6 +2194,7 @@ class HexwalkTUI:
             return f"AI error:\n{e}"
     
         return "".join(content)
+
 
     def show_ai_summary_modal(self, ai_text):
         """
