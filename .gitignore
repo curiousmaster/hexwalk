@@ -3,4 +3,5 @@ x
 *.bak
 *.tgz
 *.sh
-nisse
+hexwalk_*.json
+hexwalk_*.txt
