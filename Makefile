@@ -12,10 +12,14 @@ BIN_SRC   = bin/hexwalk
 DATA_SRC  = share/hexwalk
 MAN_SRC   = documentation/hexwalk.1
 
-.PHONY: all install uninstall clean
+.PHONY: all requirements install uninstall clean
 
 all:
 	@echo "Nothing to build. Use 'make install'."
+
+requirements:
+	@echo "Installing hexwalk requirements"
+	pip install -r requirements.txt
 
 install:
 	@echo "Installing hexwalk to $(PREFIX)..."
