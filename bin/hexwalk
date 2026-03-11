@@ -3693,7 +3693,6 @@ def main():
     # NON-INTERACTIVE MODE (NO CURSES)
     # ==================================================
     if args.summary or args.export:
-        print(keywords);
         matches = search_keywords(binary, keywords, progress_cb=None)
 
         if not matches:
