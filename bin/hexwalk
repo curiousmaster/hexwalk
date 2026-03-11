@@ -873,42 +873,63 @@ def load_cli_keywords(expr):
 
     return keywords
 
+
 def load_keywords(base_dir: str):
     """
-    Load keywords from keywords/<domain>/<subcategory>.txt
+    Load keywords from:
+      1. <base_dir>/<domain>/<subcategory>.txt
+      2. ~/.hexwalk/keywords/<domain>/<subcategory>.txt
+
     Deduplicate globally (first occurrence wins).
     """
-    base = Path(base_dir)
+
     keywords = []
     seen = set()
 
-    for domain_dir in sorted(p for p in base.iterdir() if p.is_dir()):
-        domain = domain_dir.name
+    def load_from_directory(root: Path):
+        if not root.exists() or not root.is_dir():
+            return
 
-        for file in sorted(domain_dir.glob("*.txt")):
-            subcategory = file.stem
+        for domain_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            domain = domain_dir.name
 
-            with file.open(encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
+            for file in sorted(domain_dir.glob("*.txt")):
+                subcategory = file.stem
 
-                    key = line.lower()
-#                    if key in seen:
-#                        continue
+                try:
+                    with file.open(encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
 
-                    seen.add(key)
+                            key = line.lower()
 
-                    keywords.append({
-                        "value": line,
-                        "domain": domain,
-                        "subcategory": subcategory,
-                        "source": str(file),
-                    })
+                            # Global deduplication (first wins)
+                            if key in seen:
+                                continue
+
+                            seen.add(key)
+
+                            keywords.append({
+                                "value": line,
+                                "domain": domain,
+                                "subcategory": subcategory,
+                                "source": str(file),
+                            })
+
+                except Exception:
+                    # Silently ignore unreadable files
+                    continue
+
+    # 1️⃣ Load built-in keywords first
+    load_from_directory(Path(base_dir))
+
+    # 2️⃣ Load user keywords (override only if new)
+    user_dir = Path.home() / ".hexwalk" / "keywords"
+    load_from_directory(user_dir)
 
     return keywords
-
 
 # ---------------- OD STYLE -----------------
 def od_bc_view(data, offset, keyword, context=64):
@@ -3672,6 +3693,7 @@ def main():
     # NON-INTERACTIVE MODE (NO CURSES)
     # ==================================================
     if args.summary or args.export:
+        print(keywords);
         matches = search_keywords(binary, keywords, progress_cb=None)
 
         if not matches:
