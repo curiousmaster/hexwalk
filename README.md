@@ -8,7 +8,9 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 
 ---
 
-<img width="800" alt="image" src="https://github.com/user-attachments/assets/da6dceaf-8bd5-4a4e-9dc7-aad7a44cf1f7" />
+<img width="400" alt="image" src="https://github.com/user-attachments/assets/da6dceaf-8bd5-4a4e-9dc7-aad7a44cf1f7" />
+<img width="400" alt="image" src="https://github.com/user-attachments/assets/287e8974-4e40-41c5-9f6a-752b9c40999e" />
+
 
 
 ## Key Features
