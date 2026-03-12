@@ -3197,6 +3197,12 @@ class HexwalkTUI:
             "  d              : Toggle details pane",
             "  [ / ]          : Resize details pane",
             "",
+            "Keyword Management:",
+            "  K              : Enter Keyword Management",
+            "",
+            "AI Analysis:",
+            "  A              : Enter AI mode",
+            "",
             "Help & Exit:",
             "  h              : Show this help",
             "  q / Esc        : Close help",
@@ -3541,8 +3547,15 @@ class HexwalkTUI:
 
         # ---------- Status bar ----------
         status = (
-            "Tab pane | ↑↓ move | Enter expand/view | / filter | "
-            "d toggle details | [ ] resize | e export | h help | q quit"
+            "Tab pane | "
+            "Enter open | "
+            "/ filter | "
+            "K Keyword | "
+            "d details | "
+            "[ ] resize | "
+            "e export | "
+            "h help | "
+            "q quit"
         )
 
         if w > 1:
@@ -3697,7 +3710,7 @@ class HexwalkTUI:
 
     def _valid_keyword_name(self, name: str) -> bool:
         import re
-        return bool(re.fullmatch(r"[a-zA-Z0-9._\-{}:,*\?\[\]\\]+", name))
+        return bool(re.fullmatch(r"[a-zA-Z0-9. _\-{}:,*\?\[\]\\]+", name))
 
     def show_keyword_subcategory_modal(self, category):
         import curses
