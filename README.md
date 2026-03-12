@@ -8,6 +8,9 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 
 ---
 
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/da6dceaf-8bd5-4a4e-9dc7-aad7a44cf1f7" />
+
+
 ## Key Features
 
 - Interactive terminal user interface (TUI)
