@@ -3850,7 +3850,8 @@ class HexwalkTUI:
         Reload keywords and mark scan for automatic re-run
         when returning to main screen.
         """
-        self.keywords = load_keywords(str(self.keyword_base_dir))
+        #self.keywords = load_keywords(str(self.keyword_base_dir))
+        self.keywords = load_keywords(KEYWORD_DIR)
         self._rescan_on_return = True
 
     # ---------------- MAIN LOOP -----------------
