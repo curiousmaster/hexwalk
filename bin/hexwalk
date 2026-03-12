@@ -981,6 +981,14 @@ class HexwalkTUI:
         self.ollama_models = []
         self.ollama_error = None
 
+        # ---------- Keyword Manager state ----------
+        self.keyword_base_dir = Path.home() / ".hexwalk" / "keywords"
+        self.keyword_base_dir.mkdir(parents=True, exist_ok=True)
+        self.keywords_modified = False
+        self._rescan_on_return = False
+
+
+
         ollama_cfg = self.config.get("ollama", {})
 
         if ollama_cfg.get("enabled"):
@@ -1231,7 +1239,7 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
-    def edit_text_modal(self, title, initial_text):
+    def xxedit_text_modal(self, title, initial_text):
         import curses
         import curses.ascii
 
@@ -1356,6 +1364,143 @@ class HexwalkTUI:
             elif curses.ascii.isprint(key):
                 lines[y] = lines[y][:x] + chr(key) + lines[y][x:]
                 x += 1
+
+    def edit_text_modal(self, title, initial_text):
+        import curses
+        import textwrap
+
+        text = initial_text.splitlines()
+        if not text:
+            text = [""]
+
+        cursor_y = 0
+        cursor_x = 0
+        offset = 0
+
+        h, w = self.stdscr.getmaxyx()
+        mh = min(100, h - 2)
+        mw = min(100, w - 0)
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+
+        # ---- Layout ----
+        title_row = 1
+        footer_row = mh - 2
+
+        # Inner box dimensions
+        inner_top = 3
+        inner_left = 2
+        inner_height = mh - 8
+        inner_width = mw - 4
+
+        while True:
+            win.erase()
+            win.box()
+            draw_box(win, mh, mw, self.box)
+
+            # Title
+            win.addstr(title_row, 2, title, curses.A_BOLD)
+
+            # ---- Draw inner text box ----
+            win.addstr(inner_top - 1, inner_left, "┌" + "─" * (inner_width - 2) + "┐")
+            for i in range(inner_height - 2):
+                win.addstr(inner_top + i, inner_left, "│")
+                win.addstr(inner_top + i, inner_left + inner_width - 1, "│")
+            win.addstr(
+                inner_top + inner_height - 2,
+                inner_left,
+                "└" + "─" * (inner_width - 2) + "┘"
+            )
+
+            # ---- Render text inside inner box ----
+            visible_lines = text[offset: offset + inner_height - 2]
+
+            for i, line in enumerate(visible_lines):
+                display = line[:inner_width - 3]
+                win.addstr(
+                    inner_top + i,
+                    inner_left + 1,
+                    display
+                )
+
+            # Footer
+            footer = "[Ctrl+S] Save   [Ctrl+Q] Cancel"
+            win.addstr(footer_row, 2, footer[:mw - 4])
+
+            # ---- Cursor positioning ----
+            if cursor_y < offset:
+                offset = cursor_y
+            elif cursor_y >= offset + (inner_height - 2):
+                offset = cursor_y - (inner_height - 3)
+
+            cy = inner_top + (cursor_y - offset)
+            cx = inner_left + 1 + cursor_x
+
+            win.move(cy, cx)
+            win.refresh()
+
+            key = win.getch()
+
+            # ---- Save ----
+            if key == 19:  # Ctrl+S
+                return "\n".join(text)
+
+            # ---- Cancel ----
+            if key == 17:  # Ctrl+Q
+                return None
+
+            # ---- Navigation ----
+            if key == curses.KEY_UP:
+                cursor_y = max(0, cursor_y - 1)
+                cursor_x = min(cursor_x, len(text[cursor_y]))
+
+            elif key == curses.KEY_DOWN:
+                cursor_y = min(len(text) - 1, cursor_y + 1)
+                cursor_x = min(cursor_x, len(text[cursor_y]))
+
+            elif key == curses.KEY_LEFT:
+                if cursor_x > 0:
+                    cursor_x -= 1
+                elif cursor_y > 0:
+                    cursor_y -= 1
+                    cursor_x = len(text[cursor_y])
+
+            elif key == curses.KEY_RIGHT:
+                if cursor_x < len(text[cursor_y]):
+                    cursor_x += 1
+                elif cursor_y < len(text) - 1:
+                    cursor_y += 1
+                    cursor_x = 0
+
+            # ---- New line ----
+            elif key in (10, 13):
+                current = text[cursor_y]
+                text[cursor_y] = current[:cursor_x]
+                text.insert(cursor_y + 1, current[cursor_x:])
+                cursor_y += 1
+                cursor_x = 0
+
+            # ---- Backspace ----
+            elif key in (curses.KEY_BACKSPACE, 127):
+                if cursor_x > 0:
+                    line = text[cursor_y]
+                    text[cursor_y] = line[:cursor_x - 1] + line[cursor_x:]
+                    cursor_x -= 1
+                elif cursor_y > 0:
+                    prev_len = len(text[cursor_y - 1])
+                    text[cursor_y - 1] += text[cursor_y]
+                    del text[cursor_y]
+                    cursor_y -= 1
+                    cursor_x = prev_len
+
+            # ---- Printable characters ----
+            elif 32 <= key <= 126:
+                line = text[cursor_y]
+                text[cursor_y] = line[:cursor_x] + chr(key) + line[cursor_x:]
+                cursor_x += 1
 
     def edit_prompt_modal(self, prompt_id):
         import curses
@@ -3410,9 +3555,331 @@ class HexwalkTUI:
 
         self.stdscr.refresh()
 
+    # ---------------- CATEGORY MANAGER -----------------
+    def show_keyword_category_modal(self):
+        import curses
+        from pathlib import Path
+
+        base_dir = Path.home() / ".hexwalk" / "keywords"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        sel = 0
+        offset = 0
+
+        while True:
+            categories = sorted(
+                [p.name for p in base_dir.iterdir() if p.is_dir()]
+            )
+
+            h, w = self.stdscr.getmaxyx()
+            mh = min(100, h - 2)
+            mw = min(100, w - 0)
+            y = (h - mh) // 2
+            x = (w - mw) // 2
+
+            win = curses.newwin(mh, mw, y, x)
+            win.keypad(True)
+
+            visible_rows = mh - 6
+
+            # Adjust selection bounds
+            if sel >= len(categories):
+                sel = max(0, len(categories) - 1)
+
+            while True:
+                win.erase()
+                win.box()
+                draw_box(win, mh, mw, self.box)
+                win.addstr(1, 2, "Manage Keywords – Categories", curses.A_BOLD)
+
+                if sel < offset:
+                    offset = sel
+                elif sel >= offset + visible_rows:
+                    offset = sel - visible_rows + 1
+
+                # Render categories
+                for row in range(visible_rows):
+                    idx = offset + row
+                    if idx >= len(categories):
+                        break
+
+                    label = f"[{idx}] {categories[idx]}"
+                    attr = curses.A_REVERSE if idx == sel else curses.A_NORMAL
+                    win.addstr(3 + row, 4, label[:mw - 8], attr)
+
+                footer = "[Enter] Open  [a] Add  [d] Delete  [q] Back"
+                win.addstr(mh - 2, 2, footer[:mw - 4])
+
+                win.refresh()
+                key = win.getch()
+
+                if key == curses.KEY_UP:
+                    sel = max(0, sel - 1)
+
+                elif key == curses.KEY_DOWN:
+                    sel = min(len(categories) - 1, sel + 1)
+
+                elif key in (10, 13):  # Enter
+                    if categories:
+                        # Stub for next step
+                        self.show_keyword_subcategory_modal(categories[sel])
+                    break
+
+                elif key == ord("a"):
+                    name = self.edit_single_line(
+                        "New Category Name",
+                        ""
+                    )
+                    if name:
+                        name = name.strip()
+                        if self._valid_keyword_name(name):
+                            (base_dir / name).mkdir(exist_ok=True)
+                            self.reload_keywords_only()
+                    break
+
+                elif key == ord("d"):
+                    if not categories:
+                        continue
+                    target = base_dir / categories[sel]
+                    if any(target.iterdir()):
+                        self.show_text_modal(
+                            "Cannot Delete",
+                            "Category is not empty.",
+                        )
+                    else:
+                        target.rmdir()
+                        self.reload_keywords_only()
+                    break
+
+                elif key in (ord("q"), 27):
+                    if self.keywords_modified:
+                        self.findings = {}
+                        self.ai_cache = None  # if you use one
+                    return
+
+
+    def _validate_keyword_file(self, content: str):
+        """
+        Validate keyword file.
+        - One keyword per line
+        - Allow empty lines
+        - Allow comments starting with #
+        - Strip whitespace
+        - Deduplicate
+        """
+
+        lines = content.splitlines()
+        cleaned_lines = []
+        seen = set()
+
+        for i, line in enumerate(lines, start=1):
+            raw = line.strip()
+
+            if not raw:
+                continue
+
+            if raw.startswith("#"):
+                cleaned_lines.append(raw)
+                continue
+
+            if not self._valid_keyword_name(raw):
+                return False, None, f"Invalid keyword at line {i}: '{raw}'"
+
+            lower = raw.lower()
+            if lower in seen:
+                continue
+
+            seen.add(lower)
+            cleaned_lines.append(raw)
+
+        cleaned = "\n".join(cleaned_lines) + "\n"
+        return True, cleaned, None
+
+    def _valid_keyword_name(self, name: str) -> bool:
+        import re
+        return bool(re.fullmatch(r"[a-zA-Z0-9._\-{}:,*\?\[\]\\]+", name))
+
+    def show_keyword_subcategory_modal(self, category):
+        import curses
+        from pathlib import Path
+
+        base_dir = self.keyword_base_dir / category
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        sel = 0
+        offset = 0
+
+        while True:
+            files = sorted(base_dir.glob("*.txt"))
+            subcategories = [f.stem for f in files]
+
+            h, w = self.stdscr.getmaxyx()
+            mh = min(100, h - 2)
+            mw = min(100, w - 0)
+            y = (h - mh) // 2
+            x = (w - mw) // 2
+
+            win = curses.newwin(mh, mw, y, x)
+            win.keypad(True)
+
+            visible_rows = mh - 6
+
+            if sel >= len(subcategories):
+                sel = max(0, len(subcategories) - 1)
+
+            while True:
+                win.erase()
+                win.box()
+                draw_box(win, mh, mw, self.box)
+                win.addstr(1, 2, f"Category: {category}", curses.A_BOLD)
+
+                if sel < offset:
+                    offset = sel
+                elif sel >= offset + visible_rows:
+                    offset = sel - visible_rows + 1
+
+                for row in range(visible_rows):
+                    idx = offset + row
+                    if idx >= len(subcategories):
+                        break
+
+                    label = f"[{idx}] {subcategories[idx]}"
+                    attr = curses.A_REVERSE if idx == sel else curses.A_NORMAL
+                    win.addstr(3 + row, 4, label[:mw - 8], attr)
+
+                footer = "[Enter] Edit  [a] Add  [d] Delete  [q] Back"
+                win.addstr(mh - 2, 2, footer[:mw - 4])
+
+                win.refresh()
+                key = win.getch()
+
+                if key == curses.KEY_UP:
+                    sel = max(0, sel - 1)
+
+                elif key == curses.KEY_DOWN:
+                    sel = min(len(subcategories) - 1, sel + 1)
+
+                elif key in (10, 13):  # Enter → Edit
+                    if subcategories:
+                        self.edit_keyword_file(category, subcategories[sel])
+                    break
+
+                elif key == ord("a"):  # Add subcategory
+                    name = self.edit_single_line("New Subcategory Name", "")
+                    if name:
+                        name = name.strip()
+                        if self._valid_keyword_name(name):
+                            path = base_dir / f"{name}.txt"
+                            path.touch(exist_ok=True)
+                            self.reload_keywords_only()
+                    break
+
+                elif key == ord("d"):  # Delete subcategory
+                    if not subcategories:
+                        continue
+                    target = base_dir / f"{subcategories[sel]}.txt"
+                    target.unlink(missing_ok=True)
+                    self.reload_keywords_only()
+                    break
+
+                elif key == ord("q"):
+                    return
+
+
+    def edit_keyword_file(self, category, subcategory):
+        import os
+        import tempfile
+        import subprocess
+        from pathlib import Path
+
+        path = self.keyword_base_dir / category / f"{subcategory}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = ""
+        if path.exists():
+            existing = path.read_text(encoding="utf-8", errors="ignore")
+
+        # ---- Create temp file ----
+        with tempfile.NamedTemporaryFile(
+            mode="w+",
+            delete=False,
+            suffix=".txt"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(existing)
+            tmp.flush()
+
+        # ---- Determine editor ----
+        editor = os.environ.get("EDITOR", "vi")
+
+        # ---- Suspend curses before launching editor ----
+        curses.endwin()
+
+        try:
+            subprocess.call([editor, str(tmp_path)])
+        finally:
+            # Restore curses screen
+            self.stdscr.refresh()
+
+        # ---- Read edited content ----
+        try:
+            new_content = tmp_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            self.show_text_modal("Error", f"Failed to read temp file:\n{e}")
+            tmp_path.unlink(missing_ok=True)
+            return
+
+        tmp_path.unlink(missing_ok=True)
+
+        # ---- Syntax validation ----
+        valid, cleaned, error = self._validate_keyword_file(new_content)
+
+        if not valid:
+            self.show_text_modal("Keyword Validation Error", error)
+            return
+
+        # ---- Write final file ----
+        path.write_text(cleaned, encoding="utf-8")
+
+        # ---- Reload keywords only ----
+        self.reload_keywords_only()
+
+
+    def reload_keywords_only(self):
+        """
+        Reload keywords and mark scan for automatic re-run
+        when returning to main screen.
+        """
+        self.keywords = load_keywords(str(self.keyword_base_dir))
+        self._rescan_on_return = True
+
     # ---------------- MAIN LOOP -----------------
     def main_loop(self):
         while True:
+            # ---- Auto re-scan if keywords changed ----
+            if getattr(self, "_rescan_on_return", False):
+                self._rescan_on_return = False
+
+                # Run search
+                self.findings = search_keywords(
+                    self.binary,
+                    self.keywords,
+                    progress_cb=None
+                )
+
+                # Rebuild domain/category tree
+                self.category_tree = self.build_domain_tree()
+
+                # Reset navigation state
+                self.cat_i = 0
+                self.cat_offset = 0
+                self.hit_i = 0
+                self.hit_offset = 0
+
+                # Recompute widths
+                self.recompute_count_widths()
+            # ---- Auto re-scan if keywords changed ----
+
             self.draw()
             key = self.stdscr.getch()
 
@@ -3628,6 +4095,9 @@ class HexwalkTUI:
             elif key == ord("a") and self.ollama_ok:
                 ai_output = self.run_ai_analysis()
                 self.show_ai_summary_modal(ai_output)
+
+            elif key == ord("K"):
+                self.show_keyword_category_modal()
 
 
 # ---------------- PROGRESS BAR -----------------
