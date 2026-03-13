@@ -3202,6 +3202,7 @@ class HexwalkTUI:
             "",
             "AI Analysis:",
             "  A              : Enter AI mode",
+            "  c              : AI configuration",
             "",
             "Help & Exit:",
             "  h              : Show this help",
