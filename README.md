@@ -53,10 +53,11 @@ HexWalk uses a **filesystem-based keyword hierarchy**:
 ...
 ```
 
-- Each **directory** represents a *domain*
+- Each **directory** represents a *domain/category*
 - Each `.txt` file represents a *subcategory*
-- Each line in a file represents a *keyword*
-- Keywords can be a regex if prepended by *regex:*
+   - Each line in a file represents a *keyword*
+   - Keywords can be a regex if prepended by *regex:*
+- Files with extension `.yara` contains YARA rules
 - Comment lines (`#`) and empty lines are ignored
 
 This structure is reflected directly in the TUI tree view.
@@ -94,7 +95,7 @@ git clone git@github.com:curiousmaster/hexwalk.git
 cd hexwalk
 ```
 
-Install php requirements:
+Install php requirements (_you may have to use a venv environment_):
 
 ```
 pip install -r requirements.txt
@@ -132,7 +133,6 @@ hexwalk <file>
 ```
 --summary     Write summary file and exit
 --export      Write JSON export file and exit
---show-all    Show all domains, subcategories, and keywords (even with zero hits)
 ```
 
 Examples:
@@ -141,7 +141,6 @@ Examples:
 hexwalk firmware.bin
 hexwalk --summary firmware.bin
 hexwalk --export firmware.bin
-hexwalk --show-all /etc/passwd
 ```
 
 ---
