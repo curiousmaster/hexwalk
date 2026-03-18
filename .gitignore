@@ -3,5 +3,6 @@ x
 *.bak
 *.tgz
 *.sh
+*.log
 hexwalk_*.json
 hexwalk_*.txt

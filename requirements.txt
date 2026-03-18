@@ -16,3 +16,4 @@ tabulate==0.7.5
 textual==7.4.0
 typing_extensions==4.15.0
 uc-micro-py==1.0.3
+yara-python

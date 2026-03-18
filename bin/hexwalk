@@ -981,6 +981,8 @@ try:
 except Exception:
     YARA_AVAILABLE = False
 
+from pathlib import Path
+import re
 
 def load_rules(base_dir: str):
     rules = {
@@ -992,86 +994,115 @@ def load_rules(base_dir: str):
     seen_plain = set()
     seen_regex = set()
 
-    debug_log(f"Starting load_rules()")
+    debug_log("Starting load_rules()")
     debug_log(f"YARA_AVAILABLE: {YARA_AVAILABLE}")
-    def load_from_directory(root: Path):
-        if not root.exists():
-            return
 
-        for domain_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            domain = domain_dir.name
+    def process_txt_file(file: Path):
+        category = file.parent.name
+        subcategory = file.stem
 
-            for file in sorted(domain_dir.iterdir()):
-                debug_log(f"Inspecting file: {file}", "search")
-                subcategory = file.stem
+        try:
+            with file.open(encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
 
-                # ---------------- TXT ----------------
-                if file.suffix == ".txt":
-                    try:
-                        with file.open(encoding="utf-8", errors="ignore") as f:
-                            for line in f:
-                                line = line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-
-                                # REGEX
-                                if line.startswith("regex:"):
-                                    pattern = line[6:]
-                                    if pattern in seen_regex:
-                                        continue
-                                    try:
-                                        compiled = re.compile(pattern.encode().decode())
-                                    except re.error:
-                                        continue
-
-                                    seen_regex.add(pattern)
-                                    rules["regex"].append({
-                                        "pattern": pattern,
-                                        "compiled": compiled,
-                                        "domain": domain,
-                                        "subcategory": subcategory,
-                                        "source": str(file),
-                                    })
-
-                                # PLAIN
-                                else:
-                                    key = line.lower()
-                                    if key in seen_plain:
-                                        continue
-
-                                    seen_plain.add(key)
-                                    rules["plain"].append({
-                                        "value": line,
-                                        "domain": domain,
-                                        "subcategory": subcategory,
-                                        "source": str(file),
-                                    })
-                    except Exception:
+                    if not line or line.startswith("#"):
                         continue
 
-                # ---------------- YARA ----------------
-                elif file.suffix == ".yara" and YARA_AVAILABLE:
-                    debug_log(f"Attempting YARA compile: {file}", "yara")
-                    try:
-                        compiled = yara.compile(filepath=str(file))
-                        rules["yara"].append({
+                    # ---------------- REGEX ----------------
+                    if line.startswith("regex:"):
+                        pattern = line[6:]
+
+                        if pattern in seen_regex:
+                            continue
+
+                        try:
+                            compiled = re.compile(pattern)
+                        except re.error:
+                            continue
+
+                        seen_regex.add(pattern)
+
+                        rules["regex"].append({
+                            "pattern": pattern,
                             "compiled": compiled,
-                            "domain": domain,
+                            "domain": category,
+                            "category": category,
                             "subcategory": subcategory,
                             "source": str(file),
                         })
-                    except Exception:
-                        continue
-                    debug_log(f"Loaded YARA rule from: {file}", "yara")
 
-    load_from_directory(Path(base_dir))
-    user_dir = Path.home() / ".hexwalk" / "keywords"
-    load_from_directory(user_dir)
+                    # ---------------- PLAIN ----------------
+                    else:
+                        key = line.lower()
 
-    debug_log(f"RULE KEYS: {rules.keys()}")
-    debug_log(f"RULE KEYS: {len(rules.get("yara", []))}")
+                        if key in seen_plain:
+                            continue
+
+                        seen_plain.add(key)
+
+                        rules["plain"].append({
+                            "value": line,
+                            "domain": category,
+                            "category": category,
+                            "subcategory": subcategory,
+                            "source": str(file),
+                        })
+
+        except Exception as e:
+            debug_log(f"TXT load failed: {file} ({e})", "error")
+
+    def process_yara_file(file: Path):
+        if not YARA_AVAILABLE:
+            return
+
+        category = file.parent.name
+        subcategory = file.stem
+
+        debug_log(f"Attempting YARA compile: {file}", "yara")
+
+        try:
+            compiled = yara.compile(filepath=str(file))
+
+            rules["yara"].append({
+                "compiled": compiled,
+                "domain": category,
+                "category": category,
+                "subcategory": subcategory,
+                "source": str(file),
+            })
+
+            debug_log(f"Loaded YARA rule: {file}", "yara")
+
+        except Exception as e:
+            debug_log(f"YARA compile failed: {file} ({e})", "error")
+
+    def scan_directory(root: Path):
+        if not root.exists():
+            return
+
+        for file in root.rglob("*"):
+            if not file.is_file():
+                continue
+
+            debug_log(f"Inspecting file: {file}", "search")
+
+            if file.suffix == ".txt":
+                process_txt_file(file)
+
+            elif file.suffix == ".yara":
+                process_yara_file(file)
+
+    # Scan base + user directories
+    scan_directory(Path(base_dir))
+    scan_directory(Path.home() / ".hexwalk" / "keywords")
+
+    debug_log(f"Total plain rules: {len(rules['plain'])}")
+    debug_log(f"Total regex rules: {len(rules['regex'])}")
+    debug_log(f"Total yara rules: {len(rules['yara'])}")
 
     return rules
+
 
 # ---------------- OD STYLE -----------------
 def od_bc_view(data, offset, keyword, context=64):

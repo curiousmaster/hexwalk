@@ -1,27 +1,61 @@
-PREFIX   ?= /usr/local
-BINDIR    = $(PREFIX)/bin
-SHAREDIR  = $(PREFIX)/share/hexwalk
-MANDIR    = $(PREFIX)/share/man/man1
+PREFIX     = /usr/local
+BINDIR     = $(PREFIX)/bin
+SHAREDIR   = $(PREFIX)/share/hexwalk
+MANDIR     = $(PREFIX)/share/man/man1
 
-INSTALL       = install
-INSTALL_BIN   = $(INSTALL) -m 0755
-INSTALL_MAN   = $(INSTALL) -m 0644
-MKDIR_P       = mkdir -p
+PYTHON     ?= python3
+VENV       = $(SHAREDIR)/venv
+VENV_PY    = $(VENV)/bin/python
+VENV_PIP   = $(VENV)/bin/pip
+
+INSTALL        = install
+INSTALL_BIN    = $(INSTALL) -m 0755
+INSTALL_MAN    = $(INSTALL) -m 0644
+MKDIR_P        = mkdir -p
 
 BIN_SRC   = bin/hexwalk
 DATA_SRC  = share/hexwalk
 MAN_SRC   = documentation/hexwalk.1
 
-.PHONY: all requirements install uninstall clean
+# Use this if you later create a lock file
+REQ_FILE ?= requirements.txt
+# REQ_FILE ?= requirements.lock
+
+.PHONY: all install uninstall clean venv requirements
+
+# ---------------------------------------------------------
+# Default
+# ---------------------------------------------------------
 
 all:
 	@echo "Nothing to build. Use 'make install'."
 
-requirements:
-	@echo "Installing hexwalk requirements"
-	pip install -r requirements.txt
+# ---------------------------------------------------------
+# Virtual Environment Setup
+# ---------------------------------------------------------
 
-install:
+venv:
+	@echo "Setting up virtual environment..."
+	@if [ ! -d "$(VENV)" ]; then \
+		$(PYTHON) -m venv $(VENV); \
+	else \
+		echo "Venv already exists."; \
+	fi
+
+# ---------------------------------------------------------
+# Install Python Requirements
+# ---------------------------------------------------------
+
+requirements: venv
+	@echo "Installing Python dependencies..."
+	$(VENV_PIP) install --upgrade pip
+	$(VENV_PIP) install -r $(REQ_FILE)
+
+# ---------------------------------------------------------
+# Install
+# ---------------------------------------------------------
+
+install: requirements
 	@echo "Installing hexwalk to $(PREFIX)..."
 
 	# Create directories
@@ -29,31 +63,43 @@ install:
 	$(MKDIR_P) $(SHAREDIR)
 	$(MKDIR_P) $(MANDIR)
 
-	# Install requirements
-	python -m venv ${SHAREDIR}/venv
-	${SHAREDIR}/venv/bin/python -m pip install -r requirements.txt
+	# Install main script (NOT directly executable from /bin)
+	$(INSTALL_BIN) $(BIN_SRC) $(SHAREDIR)/hexwalk.py
 
-	# Install binary
-	$(INSTALL_BIN) $(BIN_SRC) $(BINDIR)/hexwalk
-
-	# Install shared data (including keywords tree)
+	# Install shared data (keywords, etc.)
 	@echo "Installing shared data..."
 	cp -r $(DATA_SRC)/* $(SHAREDIR)/
 	chmod -R ugo+r $(SHAREDIR)
 
+	# Create wrapper launcher
+	@echo "Creating wrapper..."
+	@echo '#!/bin/sh' > $(BINDIR)/hexwalk
+	@echo 'exec $(VENV_PY) $(SHAREDIR)/hexwalk.py "$$@"' >> $(BINDIR)/hexwalk
+	chmod +x $(BINDIR)/hexwalk
+
 	# Install man page
 	$(INSTALL_MAN) $(MAN_SRC) $(MANDIR)/hexwalk.1
-	mandb
+	@which mandb >/dev/null 2>&1 && mandb || true
 
 	@echo "Install complete."
 
+# ---------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------
+
 uninstall:
 	@echo "Removing hexwalk from $(PREFIX)..."
+
 	rm -f $(BINDIR)/hexwalk
-	rm -rf $(SHAREDIR)
 	rm -f $(MANDIR)/hexwalk.1*
+	rm -rf $(SHAREDIR)
+
 	@echo "Uninstall complete."
 
-clean:
-	@echo "Nothing to clean."
+# ---------------------------------------------------------
+# Clean (local project only)
+# ---------------------------------------------------------
 
+clean:
+	@echo "Cleaning local artifacts..."
+	rm -rf build dist *.egg-info
