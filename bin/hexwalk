@@ -1090,7 +1090,7 @@ def load_rules(base_dir: str):
             if file.suffix == ".txt":
                 process_txt_file(file)
 
-            elif file.suffix == ".yara":
+            elif file.suffix in (".yara", ".yar"):
                 process_yara_file(file)
 
     # Scan base + user directories
