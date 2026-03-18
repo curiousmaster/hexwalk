@@ -29,6 +29,10 @@ install:
 	$(MKDIR_P) $(SHAREDIR)
 	$(MKDIR_P) $(MANDIR)
 
+	# Install requirements
+	python -m venv ${SHAREDIR}/venv
+	${SHAREDIR}/venv/bin/python -m pip install -r requirements.txt
+
 	# Install binary
 	$(INSTALL_BIN) $(BIN_SRC) $(BINDIR)/hexwalk
 

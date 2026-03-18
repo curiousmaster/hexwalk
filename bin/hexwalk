@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#! /usr/local/share/hexwalk/venv/bin/python
 # ===================================================
 #
 # NAME
@@ -119,6 +119,10 @@ def debug_init(cfg):
     global DEBUG_CFG
     DEBUG_CFG = cfg.get("debug", {})
 
+def sanitize_for_curses(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("\x00", "")
 
 def debug_log(message, section=None):
     """
@@ -3630,6 +3634,7 @@ class HexwalkTUI:
 
             # HARD CAP text (prevents wrapping)
             visible = text[:max_width]
+            visible = sanitize_for_curses(visible)
 
             pos = visible.lower().find(kw_match.lower()) if kw_match else -1
 
