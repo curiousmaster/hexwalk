@@ -122,7 +122,11 @@ def debug_init(cfg):
 def sanitize_for_curses(text: str) -> str:
     if not text:
         return ""
-    return text.replace("\x00", "")
+
+    return "".join(
+        c if 32 <= ord(c) <= 126 else "."
+        for c in text
+    )
 
 def debug_log(message, section=None):
     """
@@ -659,23 +663,15 @@ def scan_plain_ac(binary, plain_rules, progress_cb=None):
 
     return results
 
-
 def search_rules(binary: bytes, rules: dict, progress_cb=None):
     """
-    Scan binary using:
-      - plain keyword rules
-      - regex rules
-      - YARA rules
-
-    Returns findings dict compatible with existing UI.
-
-    progress_cb(progress_float) is called with 0.0–1.0
+    Offset-safe scanning:
+    - Works ONLY on raw bytes
+    - Stores preview_bytes + relative offsets
     """
 
     from collections import defaultdict
     findings = defaultdict(list)
-
-    binary_text = binary.decode(errors="ignore")
 
     total_steps = (
         len(rules.get("plain", []))
@@ -689,91 +685,89 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
         if progress_cb and total_steps > 0:
             progress_cb(current_step / total_steps, status)
 
+    CONTEXT = 40
+
     # ==========================================================
-    # PLAIN KEYWORDS
+    # PLAIN KEYWORDS (BYTE SAFE)
     # ==========================================================
     for rule in rules.get("plain", []):
-        key = rule["value"]
+        key = rule["value"].encode(errors="ignore")
         domain = rule["domain"]
         subcat = rule["subcategory"]
 
         search_from = 0
-        key_lower = key.lower()
-        text_lower = binary_text.lower()
 
         while True:
-            idx = text_lower.find(key_lower, search_from)
+            idx = binary.find(key, search_from)
             if idx == -1:
                 break
 
             start = idx
             end = idx + len(key)
 
-            # Surrounding ASCII context (±40 chars)
-            ascii_context = binary_text[max(0, start - 40): min(len(binary_text), end + 40)]
+            ctx_start = max(0, start - CONTEXT)
+            ctx_end = min(len(binary), end + CONTEXT)
 
-            findings.setdefault(f"{domain}/{subcat}", []).append({
-                "string": ascii_context,
-                "match_key": key,
-                "match_span": [start, end],
-                "match_len": len(key),
+            preview = binary[ctx_start:ctx_end]
+
+            findings[f"{domain}/{subcat}"].append({
+                "preview_bytes": preview,
+                "match_offset": start - ctx_start,
+                "match_length": len(key),
                 "match_type": "plain",
+                "match_key": rule["value"],
                 "context": {
                     "offset": start,
-                    "bytes_hex": binary[start:min(len(binary), end + 32)].hex(),
+                    "bytes_hex": binary[start:end].hex(),
                 }
             })
 
             search_from = end
 
         current_step += 1
-        update_progress(
-            f"{current_step}/{total_steps}  |  Plain: {rule['domain']}/{rule['subcategory']}"
-        )
+        update_progress(f"{current_step}/{total_steps} | Plain: {domain}/{subcat}")
 
     # ==========================================================
-    # REGEX RULES
+    # REGEX RULES (BYTE SAFE)
     # ==========================================================
-    if rules.get("regex"):
-        for rule in rules["regex"]:
-            domain = rule["domain"]
-            subcat = rule["subcategory"]
-            pattern = rule["compiled"]   # ← IMPORTANT
+    for rule in rules.get("regex", []):
+        domain = rule["domain"]
+        subcat = rule["subcategory"]
+        pattern = rule["compiled"]
 
-            try:
-                for match in pattern.finditer(binary_text):
+        try:
+            for match in pattern.finditer(binary):
 
-                    start = match.start()
-                    end = match.end()
-                    match_text = match.group(0)
+                start = match.start()
+                end = match.end()
+                length = end - start
 
-                    ctx_start = max(0, start - 40)
-                    ctx_end = min(len(binary_text), end + 40)
+                ctx_start = max(0, start - CONTEXT)
+                ctx_end = min(len(binary), end + CONTEXT)
 
-                    ascii_context = binary_text[ctx_start:ctx_end]
+                preview = binary[ctx_start:ctx_end]
 
-                    findings[f"{domain}/{subcat}"].append({
-                        "string": ascii_context,
-                        "match_key": match_text,
-                        "match_span": [start, end],
-                        "match_len": len(match_text),
-                        "match_type": "regex",
-                        "context": {
-                            "offset": start,
-                            "bytes_hex": binary[
-                                start:min(len(binary), end + 32)
-                            ].hex(),
-                        }
-                    })
+                findings[f"{domain}/{subcat}"].append({
+                    "preview_bytes": preview,
+                    "match_offset": start - ctx_start,
+                    "match_length": length,
+                    "match_type": "regex",
+                    "match_key": match.group(0).decode("utf-8", errors="replace"),
+                    "context": {
+                        "offset": start,
+                        "bytes_hex": binary[start:end].hex(),
+                    }
+                })
 
-            except re.error:
-                continue
+        except re.error:
+            continue
+
+        current_step += 1
+        update_progress(f"{current_step}/{total_steps} | Regex: {domain}/{subcat}")
 
     # ==========================================================
-    # YARA RULES
+    # YARA RULES (ALREADY BYTE SAFE)
     # ==========================================================
-    debug_log("Just before YARA block")
-
     if rules.get("yara"):
         for rule in rules["yara"]:
 
@@ -781,78 +775,48 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
             subcat = rule["subcategory"]
             compiled = rule["compiled"]
 
-            debug_log(f"Running YARA rule: {rule['source']}", "yara")
-
             try:
                 matches = compiled.match(data=binary)
             except Exception as e:
                 debug_log(f"YARA execution error: {e}", "yara")
                 continue
 
-            debug_log(f"YARA matches found: {len(matches)}", "yara")
-
             for m in matches:
-
                 key = f"{domain}/{subcat}/{m.rule}"
 
-                if key not in findings:
-                    findings[key] = []
+                for s in m.strings or []:
+                    for instance in s.instances:
 
-                if m.strings:
+                        offset = instance.offset
+                        length = instance.matched_length
 
-                    for s in m.strings:
+                        ctx_start = max(0, offset - CONTEXT)
+                        ctx_end = min(len(binary), offset + length + CONTEXT)
 
-                        identifier = s.identifier
+                        preview = binary[ctx_start:ctx_end]
 
-                        for instance in s.instances:
+                        findings[key].append({
+                            "preview_bytes": preview,
+                            "match_offset": offset - ctx_start,
+                            "match_length": length,
+                            "match_type": "yara",
+                            "rule_name": m.rule,
+                            "match_key": s.identifier,
+                            "match_key": (
+                                s.identifier.decode("utf-8", errors="replace")
+                                if isinstance(s.identifier, bytes)
+                                else s.identifier
+                            ),
+                            "context": {
+                                "offset": offset,
+                                "bytes_hex": binary[offset:offset+length].hex(),
+                            }
+                        })
 
-                            offset = instance.offset
-                            data = instance.matched_data
-                            length = instance.matched_length
-
-                            match_text = data.decode(errors="ignore")
-
-                            ctx_start = max(0, offset - 40)
-                            ctx_end = min(len(binary_text), offset + length + 40)
-
-                            ascii_context = binary_text[ctx_start:ctx_end]
-
-                            findings[key].append({
-                                "string": ascii_context,          # what hits pane shows
-                                "match_key": match_text,
-                                "match_span": [offset, offset + length],
-                                "match_len": length,
-                                "match_type": "yara",
-                                "rule_name": m.rule,
-                                "context": {
-                                    "offset": offset,
-                                    "bytes_hex": binary[offset:offset+length].hex(),
-                                }
-                            })
-
-                            debug_log(
-                                f"Appending YARA finding under key: {key}",
-                                "yara"
-                            )
-
-                else:
-                    # Rule matched but no string instances
-                    findings[key].append({
-                        "string": f"[YARA RULE MATCH] {m.rule}",
-                        "match_key": m.rule,
-                        "match_span": [0, 0],
-                        "match_len": 0,
-                        "match_type": "yara",
-                        "rule_name": m.rule,
-                        "context": {
-                            "offset": None,
-                            "bytes_hex": None,
-                        }
-                    })
-
+        current_step += 1
+        update_progress(f"{current_step}/{total_steps} | YARA")
 
     return findings
-
 
 def generate_metadata(file_path, findings):
     total_hits = sum(len(hits) for hits in findings.values())
@@ -1017,7 +981,7 @@ def load_rules(base_dir: str):
                             continue
 
                         try:
-                            compiled = re.compile(pattern)
+                            compiled = re.compile(pattern.encode(), re.IGNORECASE)
                         except re.error:
                             continue
 
@@ -1427,131 +1391,6 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
-    def xxedit_text_modal(self, title, initial_text):
-        import curses
-        import curses.ascii
-
-        lines = initial_text.splitlines()
-        if not lines:
-            lines = [""]
-
-        y = 0          # cursor line
-        x = 0          # cursor column
-        scroll = 0     # vertical scroll offset
-
-        h, w = self.stdscr.getmaxyx()
-        mh = min(h - 4, 20)
-        mw = min(w - 4, 80)
-        sy = (h - mh) // 2
-        sx = (w - mw) // 2
-
-        win = curses.newwin(mh, mw, sy, sx)
-        win.keypad(True)
-        curses.curs_set(1)
-
-        TEXT_H = mh - 4
-
-        while True:
-            win.erase()
-            win.box()
-            draw_box(win, mh, mw, self.box)
-            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
-
-            # Draw text
-            for i in range(TEXT_H):
-                li = scroll + i
-                if li >= len(lines):
-                    break
-                win.addstr(2 + i, 2, lines[li][:mw - 4])
-
-            # Place cursor
-            cy = y - scroll
-            if 0 <= cy < TEXT_H:
-                win.move(2 + cy, 2 + min(x, mw - 5))
-
-            win.addstr(
-                mh - 2,
-                2,
-                "[Ctrl+S] Save   [Esc] Cancel",
-                curses.A_DIM
-            )
-
-            win.refresh()
-            key = win.getch()
-
-            # ---------- Exit ----------
-            if key == 27:  # ESC
-                curses.curs_set(0)
-                return None
-
-            if key == 19:  # Ctrl+S
-                curses.curs_set(0)
-                return "\n".join(lines)
-
-            # ---------- Navigation ----------
-            if key == curses.KEY_UP:
-                if y > 0:
-                    y -= 1
-                    x = min(x, len(lines[y]))
-                elif scroll > 0:
-                    scroll -= 1
-
-            elif key == curses.KEY_DOWN:
-                if y < len(lines) - 1:
-                    y += 1
-                    x = min(x, len(lines[y]))
-                    if y - scroll >= TEXT_H:
-                        scroll += 1
-
-            elif key == curses.KEY_LEFT:
-                if x > 0:
-                    x -= 1
-                elif y > 0:
-                    y -= 1
-                    x = len(lines[y])
-
-            elif key == curses.KEY_RIGHT:
-                if x < len(lines[y]):
-                    x += 1
-                elif y + 1 < len(lines):
-                    y += 1
-                    x = 0
-
-            # ---------- Editing ----------
-            elif key in (
-                curses.KEY_BACKSPACE,
-                curses.ascii.BS,
-                curses.ascii.DEL,
-            ):
-                if x > 0:
-                    lines[y] = lines[y][:x - 1] + lines[y][x:]
-                    x -= 1
-                elif y > 0:
-                    prev_len = len(lines[y - 1])
-                    lines[y - 1] += lines[y]
-                    del lines[y]
-                    y -= 1
-                    x = prev_len
-
-            elif key == curses.KEY_DC:
-                if x < len(lines[y]):
-                    lines[y] = lines[y][:x] + lines[y][x + 1:]
-                elif y + 1 < len(lines):
-                    lines[y] += lines[y + 1]
-                    del lines[y + 1]
-
-            elif key in (10, 13):  # Enter → new line
-                rest = lines[y][x:]
-                lines[y] = lines[y][:x]
-                lines.insert(y + 1, rest)
-                y += 1
-                x = 0
-                if y - scroll >= TEXT_H:
-                    scroll += 1
-
-            elif curses.ascii.isprint(key):
-                lines[y] = lines[y][:x] + chr(key) + lines[y][x:]
-                x += 1
 
     def edit_text_modal(self, title, initial_text):
         import curses
@@ -3200,7 +3039,7 @@ class HexwalkTUI:
         while True:
             hit = hits[idx]
             offset = hit["context"]["offset"]
-            match_len = hit["match_len"]
+            match_len = hit["match_length"]
 
             win.clear()
             draw_box(win, modal_h, modal_w, self.box)
@@ -3626,7 +3465,7 @@ class HexwalkTUI:
             )
 
         # ==========================================================
-        # Hits (STRICT WIDTH SAFE)
+        # HITS (FIXED)
         # ==========================================================
         self.draw_header(1, hits_x, hits_w, "Hits")
 
@@ -3637,7 +3476,7 @@ class HexwalkTUI:
         elif self.hit_i >= self.hit_offset + hit_height:
             self.hit_offset = self.hit_i - hit_height + 1
 
-        max_width = max(0, min(hits_w - 1, w - hits_x - 1))
+        max_width = max(1, min(hits_w - 1, w - hits_x - 1))
 
         for i in range(hit_height):
             idx = self.hit_offset + i
@@ -3645,9 +3484,6 @@ class HexwalkTUI:
                 break
 
             hit = hits[idx]
-            text = hit.get("string", "")
-            text = text.replace("\n", " ").replace("\r", " ")
-            kw_match = hit.get("match_key", "")
 
             row = i + 2
             col = hits_x
@@ -3663,23 +3499,36 @@ class HexwalkTUI:
 
             attr_highlight = curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
 
-            # HARD CAP text (prevents wrapping)
-            visible = text[:max_width]
-            visible = sanitize_for_curses(visible)
+            data = hit.get("preview_bytes")
+            if data is None:
+                continue
 
-            pos = visible.lower().find(kw_match.lower()) if kw_match else -1
+            visible_bytes = data[:max_width]
+
+            visible = "".join(
+                chr(b) if 32 <= b <= 126 else "."
+                for b in visible_bytes
+            )
+
+            match_offset = hit.get("match_offset", 0)
+            match_length = hit.get("match_length", 0)
+
+            h_start = max(0, min(match_offset, len(visible)))
+            h_end = max(h_start, min(match_offset + match_length, len(visible)))
 
             try:
-                if pos >= 0:
-                    before = visible[:pos]
-                    match = visible[pos:pos + len(kw_match)]
-                    after = visible[pos + len(kw_match):]
+                x = col
 
-                    x = col
-                    self.stdscr.addnstr(row, x, before, max_width, attr_normal)
-                    x += len(before)
+                # BEFORE
+                before = visible[:h_start]
+                self.stdscr.addnstr(row, x, before, max_width, attr_normal)
+                x += len(before)
 
-                    remaining = max_width - len(before)
+                # MATCH
+                if h_start < h_end:
+                    match = visible[h_start:h_end]
+                    remaining = max_width - (x - col)
+
                     if remaining > 0:
                         self.stdscr.addnstr(
                             row, x,
@@ -3689,17 +3538,17 @@ class HexwalkTUI:
                         )
                         x += min(len(match), remaining)
 
-                    remaining = max_width - (x - col)
-                    if remaining > 0:
-                        self.stdscr.addnstr(
-                            row, x,
-                            after[:remaining],
-                            remaining,
-                            attr_normal
-                        )
+                # AFTER
+                after = visible[h_end:]
+                remaining = max_width - (x - col)
 
-                else:
-                    self.stdscr.addnstr(row, col, visible, max_width, attr_normal)
+                if remaining > 0:
+                    self.stdscr.addnstr(
+                        row, x,
+                        after[:remaining],
+                        remaining,
+                        attr_normal
+                    )
 
             except curses.error:
                 pass
@@ -3718,7 +3567,7 @@ class HexwalkTUI:
                 od_lines = od_bc_view(
                     self.binary,
                     offset,
-                    hit["match_key"],
+                    hit.get("match_key", ""),
                     context=32
                 )
 
