@@ -67,12 +67,19 @@ import time
 import argparse
 import re
 import json
-import copy
 import textwrap
 import urllib.request
 import urllib.error
 
 import curses
+import curses.ascii
+
+try:
+    import yara
+    YARA_AVAILABLE = True
+except Exception:
+    YARA_AVAILABLE = False
+
 
 from pathlib import Path
 from datetime import datetime
@@ -542,7 +549,6 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
     - Stores preview_bytes + relative offsets
     """
 
-    from collections import defaultdict
     findings = defaultdict(list)
 
     total_steps = (
@@ -808,18 +814,6 @@ def load_cli_keywords(expr):
     return keywords
 
 
-import re
-from pathlib import Path
-
-try:
-    import yara
-    YARA_AVAILABLE = True
-except Exception:
-    YARA_AVAILABLE = False
-
-from pathlib import Path
-import re
-
 def load_rules(base_dir: str):
     rules = {
         "plain": [],
@@ -1052,27 +1046,6 @@ class HexwalkTUI:
         self.stdscr.clear()
         self.stdscr.refresh()
 
-        # ---------- Progress callback ----------
-        def progress_cb(phase, progress):
-            if phase == "plain":
-                self.show_progress_modal(
-                    "Scanning",
-                    "Searching plain keywords…",
-                    progress
-                )
-            elif phase == "regex":
-                self.show_progress_modal(
-                    "Scanning",
-                    "Searching regex rules…",
-                    progress
-                )
-            elif phase == "done":
-                self.show_progress_modal(
-                    "Finalizing",
-                    "Preparing interface…",
-                    1.0
-                )
-
         # ---------- Run scan WITH progress ----------
         progress_win = None
 
@@ -1243,8 +1216,6 @@ class HexwalkTUI:
     # ---------------- HELPERS -----------------
 
     def edit_prompt_modal(self, prompt_id):
-        import curses
-        import textwrap
 
         prompts = self.config.setdefault("prompts", {})
 
@@ -1395,7 +1366,6 @@ class HexwalkTUI:
         prompt["text"] = "\n".join(lines)
 
     def show_prompt_manager_modal(self):
-        import curses
 
         prompts = self.config.setdefault("prompts", {})
         active = self.config.get("active_prompt")
@@ -1470,9 +1440,6 @@ class HexwalkTUI:
                 break
 
     def show_model_select_modal(self):
-        import curses
-        import json
-        import urllib.request
 
         url = self.config["ollama"]["url"].rstrip("/") + "/api/tags"
 
@@ -1567,8 +1534,6 @@ class HexwalkTUI:
                 return None
 
     def edit_single_line(self, title, value):
-        import curses
-        import curses.ascii
 
         buf = list(value)
         pos = len(buf)  # cursor at end
@@ -1641,7 +1606,6 @@ class HexwalkTUI:
                 pos += 1
 
     def show_config_modal(self):
-        import curses
 
         # ---- Ensure config structure ----
         cfg = self.config.setdefault("ollama", {})
@@ -1753,8 +1717,6 @@ class HexwalkTUI:
 
 
     def show_text_modal( self, title, text="", single_line=False, footer="[q] Close", on_key=None,):
-        import curses
-        import textwrap
 
         h, w = self.stdscr.getmaxyx()
         mh = min(30, h - 4)
@@ -1841,9 +1803,6 @@ class HexwalkTUI:
         Save AI analysis output to current working directory.
         """
 
-        import datetime
-        import os
-
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         safe_name = os.path.basename(self.filename) if hasattr(self, "filename") else "output"
@@ -1872,8 +1831,6 @@ class HexwalkTUI:
         import json
         import urllib.request
         import urllib.error
-        import textwrap
-        import curses
         import time
         import binascii
 
@@ -2200,9 +2157,6 @@ class HexwalkTUI:
         - expansion state
         - match_type (plain / regex / yara / multi)
         """
-
-        from collections import defaultdict
-        import string
 
         tree = []
         tree_filter = self.tree_filter.lower() if self.tree_filter else None
@@ -3286,7 +3240,6 @@ class HexwalkTUI:
                 elif key in (ord("q"), 27):
                     if self.keywords_modified:
                         self.findings = {}
-                        self.ai_cache = None  # if you use one
                     return
 
 
@@ -3328,11 +3281,9 @@ class HexwalkTUI:
         return True, cleaned, None
 
     def _valid_keyword_name(self, name: str) -> bool:
-        import re
         return bool(re.fullmatch(r"[a-zA-Z0-9. _\-{}:,*\?\[\]\\]+", name))
 
     def show_keyword_subcategory_modal(self, category):
-        import curses
         from pathlib import Path
 
         base_dir = self.keyword_base_dir / category
@@ -3789,7 +3740,7 @@ def main():
     # NON-INTERACTIVE MODE (NO CURSES)
     # ==================================================
     if args.summary or args.export:
-        matches = search_rules(self.binary, self.rules)
+        matches = search_rules(binary, keywords)
 
         if not matches:
             print("No matches found.")
