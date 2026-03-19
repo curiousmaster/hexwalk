@@ -69,7 +69,6 @@ import re
 import json
 import copy
 import textwrap
-import configparser
 import urllib.request
 import urllib.error
 
@@ -84,8 +83,6 @@ DEBUG_CFG = None
 
 KEYWORD_DIR = "/usr/local/share/hexwalk/keywords"
 CONFIG_PATH = os.path.expanduser("~/.hexwalkrc")
-
-DOMAIN_RE = re.compile(r'^(\d+)_([a-zA-Z0-9_-]+)$')
 
 COLOR_CAT = 1
 COLOR_HIT = 2
@@ -108,9 +105,7 @@ COLOR_HEADER_COL1 = curses.COLOR_WHITE
 COLOR_HEADER_COL2 = curses.COLOR_BLACK
 
 CAT_W = 32
-DETAILS_W = 50
 HITS_MIN_W = 10
-SEP = 2
 
 TYPE_INDICATOR = {
     "plain": ( "[p]", 10 ),
@@ -124,15 +119,6 @@ TYPE_INDICATOR = {
 def debug_init(cfg):
     global DEBUG_CFG
     DEBUG_CFG = cfg.get("debug", {})
-
-def sanitize_for_curses(text: str) -> str:
-    if not text:
-        return ""
-
-    return "".join(
-        c if 32 <= ord(c) <= 126 else "."
-        for c in text
-    )
 
 def debug_log(message, section=None):
     """
@@ -355,30 +341,6 @@ def probe_ollama(url, timeout=5):
     except Exception as e:
         return False, [], str(e)
 
-def ollama_generate(url, model, prompt, timeout=30):
-    """
-    Call Ollama generate API.
-    Returns text or raises RuntimeError.
-    """
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-    }
-
-    req = urllib.request.Request(
-        url.rstrip("/") + "/api/generate",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("response", "").strip()
-    except Exception as e:
-        raise RuntimeError(str(e))
-
 # --- TUI ---
 def get_tree_arrows():
     """
@@ -493,32 +455,6 @@ def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=No
 
     return win
 
-def normalize_rules(keywords):
-    """
-    Convert loaded keywords into normalized rule objects.
-    """
-    rules = []
-
-    for kw in keywords:
-        raw = kw["value"]
-
-        if raw.startswith("regex:"):
-            rules.append({
-                "type": "regex",
-                "pattern": raw[6:],   # strip "regex:"
-                "raw": raw,
-                "category": f"{kw['domain']}/{kw['subcategory']}",
-            })
-        else:
-            rules.append({
-                "type": "plain",
-                "pattern": raw,
-                "raw": raw,
-                "category": f"{kw['domain']}/{kw['subcategory']}",
-            })
-
-    return rules
-
 # ---------------- HEX FILE PARSER -----------------
 def is_hex_file(file_path):
     try:
@@ -533,9 +469,6 @@ def is_hex_file(file_path):
     except OSError:
         return False
     return False
-
-def is_elf(binary):
-    return binary.startswith(b"\x7fELF")
 
 def load_binary(file_path):
     """Load a file as raw binary."""
@@ -600,74 +533,7 @@ def hex_to_bin(file_path):
 
     return bytes(memory[:max_addr])
 
-# ---------------- AHO-CORASICK SETUP -----------------
-
-def build_ac_automaton(rules):
-    """
-    Build an Aho–Corasick automaton for plain keyword rules.
-    """
-    try:
-        import ahocorasick
-    except ImportError:
-        raise RuntimeError(
-            "pyahocorasick is required for optimized scanning. "
-            "Install with: pip install pyahocorasick"
-        )
-
-    automaton = ahocorasick.Automaton()
-
-    for rule in rules:
-        automaton.add_word(
-            rule["pattern"].lower(),
-            rule
-        )
-
-    automaton.make_automaton()
-    return automaton
-
 # ---------------- PLAIN KEYWORD SCAN (AC) -----------------
-
-def scan_plain_ac(binary, plain_rules, progress_cb=None):
-    """
-    Scan binary using Aho–Corasick for plain keywords.
-    """
-    text = binary.decode("latin1", errors="ignore").lower()
-    automaton = build_ac_automaton(plain_rules)
-
-    results = defaultdict(list)
-    total = len(text)
-
-    for idx, (end_pos, rule) in enumerate(automaton.iter(text)):
-        start_pos = end_pos - len(rule["pattern"]) + 1
-
-        ctx_start = max(0, start_pos - 32)
-        ctx_end = min(len(binary), end_pos + 33)
-        ctx_bytes = binary[ctx_start:ctx_end]
-
-        ctx_ascii = "".join(
-            chr(b) if 32 <= b <= 126 else "."
-            for b in ctx_bytes
-        )
-
-        results[rule["category"]].append({
-            "string": ctx_ascii,
-            "match_key": rule["raw"],
-            "match_span": (start_pos, end_pos + 1),
-            "match_type": "plain",
-            "context": {
-                "offset": start_pos,
-                "bytes": ctx_bytes,
-            },
-        })
-
-        # ---- progress update every ~1% ----
-        if progress_cb and idx % 500 == 0:
-            progress_cb(end_pos / total)
-
-    if progress_cb:
-        progress_cb(1.0)
-
-    return results
 
 def search_rules(binary: bytes, rules: dict, progress_cb=None):
     """
@@ -1160,14 +1026,12 @@ class HexwalkTUI:
         # ---------- UI state ----------
         self.cat_i = 0
         self.cat_offset = 0
-        self.category_scroll_state = {}
         self.subcategory_keyword_state = {}
 
         self.pane = 0  # 0 = categories, 1 = hits, 2 = details
         self.hit_i = 0
         self.hit_offset = 0
 
-        self.filter_text = ""
         self.details_visible = False
         self.details_width = 48
 
@@ -1241,30 +1105,6 @@ class HexwalkTUI:
 
         # ---------- Enter main loop ----------
         self.main_loop()
-
-    def compute_count_widths(self):
-        """
-        Compute count column widths per tree level.
-        Returns dict: level -> width
-        """
-        widths = {
-            "domain": 0,
-            "subcategory": 0,
-            "keyword": 0,
-        }
-
-        for node in self.visible_category_rows():
-            level = node.get("type")
-            count = node.get("count")
-
-            if level in widths and isinstance(count, int):
-                widths[level] = max(widths[level], len(str(count)))
-
-        # Enforce sane minimums
-        for k in widths:
-            widths[k] = max(1, widths[k])
-
-        return widths
 
     def recompute_count_widths(self):
         """
@@ -1401,143 +1241,6 @@ class HexwalkTUI:
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
-
-    def edit_text_modal(self, title, initial_text):
-        import curses
-        import textwrap
-
-        text = initial_text.splitlines()
-        if not text:
-            text = [""]
-
-        cursor_y = 0
-        cursor_x = 0
-        offset = 0
-
-        h, w = self.stdscr.getmaxyx()
-        mh = min(100, h - 2)
-        mw = min(100, w - 0)
-        y = (h - mh) // 2
-        x = (w - mw) // 2
-
-        win = curses.newwin(mh, mw, y, x)
-        win.keypad(True)
-
-        # ---- Layout ----
-        title_row = 1
-        footer_row = mh - 2
-
-        # Inner box dimensions
-        inner_top = 3
-        inner_left = 2
-        inner_height = mh - 8
-        inner_width = mw - 4
-
-        while True:
-            win.erase()
-            win.box()
-            draw_box(win, mh, mw, self.box)
-
-            # Title
-            win.addstr(title_row, 2, title, curses.A_BOLD)
-
-            # ---- Draw inner text box ----
-            win.addstr(inner_top - 1, inner_left, "┌" + "─" * (inner_width - 2) + "┐")
-            for i in range(inner_height - 2):
-                win.addstr(inner_top + i, inner_left, "│")
-                win.addstr(inner_top + i, inner_left + inner_width - 1, "│")
-            win.addstr(
-                inner_top + inner_height - 2,
-                inner_left,
-                "└" + "─" * (inner_width - 2) + "┘"
-            )
-
-            # ---- Render text inside inner box ----
-            visible_lines = text[offset: offset + inner_height - 2]
-
-            for i, line in enumerate(visible_lines):
-                display = line[:inner_width - 3]
-                win.addstr(
-                    inner_top + i,
-                    inner_left + 1,
-                    display
-                )
-
-            # Footer
-            footer = "[Ctrl+S] Save   [Ctrl+Q] Cancel"
-            win.addstr(footer_row, 2, footer[:mw - 4])
-
-            # ---- Cursor positioning ----
-            if cursor_y < offset:
-                offset = cursor_y
-            elif cursor_y >= offset + (inner_height - 2):
-                offset = cursor_y - (inner_height - 3)
-
-            cy = inner_top + (cursor_y - offset)
-            cx = inner_left + 1 + cursor_x
-
-            win.move(cy, cx)
-            win.refresh()
-
-            key = win.getch()
-
-            # ---- Save ----
-            if key == 19:  # Ctrl+S
-                return "\n".join(text)
-
-            # ---- Cancel ----
-            if key == 17:  # Ctrl+Q
-                return None
-
-            # ---- Navigation ----
-            if key == curses.KEY_UP:
-                cursor_y = max(0, cursor_y - 1)
-                cursor_x = min(cursor_x, len(text[cursor_y]))
-
-            elif key == curses.KEY_DOWN:
-                cursor_y = min(len(text) - 1, cursor_y + 1)
-                cursor_x = min(cursor_x, len(text[cursor_y]))
-
-            elif key == curses.KEY_LEFT:
-                if cursor_x > 0:
-                    cursor_x -= 1
-                elif cursor_y > 0:
-                    cursor_y -= 1
-                    cursor_x = len(text[cursor_y])
-
-            elif key == curses.KEY_RIGHT:
-                if cursor_x < len(text[cursor_y]):
-                    cursor_x += 1
-                elif cursor_y < len(text) - 1:
-                    cursor_y += 1
-                    cursor_x = 0
-
-            # ---- New line ----
-            elif key in (10, 13):
-                current = text[cursor_y]
-                text[cursor_y] = current[:cursor_x]
-                text.insert(cursor_y + 1, current[cursor_x:])
-                cursor_y += 1
-                cursor_x = 0
-
-            # ---- Backspace ----
-            elif key in (curses.KEY_BACKSPACE, 127):
-                if cursor_x > 0:
-                    line = text[cursor_y]
-                    text[cursor_y] = line[:cursor_x - 1] + line[cursor_x:]
-                    cursor_x -= 1
-                elif cursor_y > 0:
-                    prev_len = len(text[cursor_y - 1])
-                    text[cursor_y - 1] += text[cursor_y]
-                    del text[cursor_y]
-                    cursor_y -= 1
-                    cursor_x = prev_len
-
-            # ---- Printable characters ----
-            elif 32 <= key <= 126:
-                line = text[cursor_y]
-                text[cursor_y] = line[:cursor_x] + chr(key) + line[cursor_x:]
-                cursor_x += 1
 
     def edit_prompt_modal(self, prompt_id):
         import curses
@@ -1937,28 +1640,6 @@ class HexwalkTUI:
                 buf.insert(pos, chr(key))
                 pos += 1
 
-    def show_busy_modal(self, title, message):
-        """
-        Simple centered modal indicating a blocking operation.
-        """
-        h, w = self.stdscr.getmaxyx()
-        mw = min(60, w - 4)
-        mh = 7
-        y = (h - mh) // 2
-        x = (w - mw) // 2
-
-        win = curses.newwin(mh, mw, y, x)
-        win.keypad(True)
-        win.erase()
-        win.box()
-        draw_box(win, mh, mw, self.box)
-
-        win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
-        win.addstr(3, 2, message[:mw - 4])
-        win.refresh()
-
-        return win
-
     def show_config_modal(self):
         import curses
 
@@ -2071,25 +1752,7 @@ class HexwalkTUI:
                 break
 
 
-    def prompt_input(self, title, initial, parent):
-        h, w = parent.getmaxyx()
-        parent.clear()
-        parent.box()
-
-        prompt = f"{title}: "
-        parent.addstr(2, 2, prompt)
-        curses.echo()
-        parent.refresh()
-
-        val = parent.getstr(2, 2 + len(prompt), w - len(prompt) - 4)
-        curses.noecho()
-
-        try:
-            return val.decode("utf-8").strip()
-        except Exception:
-            return initial
-
-    def show_text_modal( self, title, text="", editable=False, single_line=False, footer="[q] Close", on_key=None,):
+    def show_text_modal( self, title, text="", single_line=False, footer="[q] Close", on_key=None,):
         import curses
         import textwrap
 
@@ -2171,74 +1834,6 @@ class HexwalkTUI:
 
             elif key == curses.KEY_END:
                 offset = max_offset
-
-    def get_active_prompt(self):
-        ollama = self.config.get("ollama", {})
-        prompts = ollama.get("prompts", {})
-        active = ollama.get("active_prompt")
-
-        if active and active in prompts:
-            return prompts[active]
-
-        # fallback
-        return next(iter(prompts.values()), None)
-
-    def build_configured_ai_prompt(self):
-        """
-        Build final AI prompt using configured prompt text
-        and structured findings summary.
-
-        Returns full prompt string.
-        """
-
-        # ---------------------------------------------
-        # Get configured prompt text
-        # ---------------------------------------------
-        prompts = self.config.get("prompts", {})
-        active_id = self.config.get("active_prompt")
-
-        prompt_obj = prompts.get(active_id)
-        if not prompt_obj:
-            return "No active AI prompt configured."
-
-        base_prompt = prompt_obj.get("text", "").strip()
-
-        # ---------------------------------------------
-        # Build findings summary block
-        # ---------------------------------------------
-        lines = []
-        total_hits = 0
-
-        for cat, hits in sorted(self.findings.items()):
-            count = len(hits)
-            if count == 0:
-                continue
-            total_hits += count
-            lines.append(f"- {cat}: {count} hits")
-
-        summary_block = "\n".join(lines) if lines else "No findings detected."
-
-        # ---------------------------------------------
-        # Compose final prompt
-        # ---------------------------------------------
-        final_prompt = f"""{base_prompt}
-
-    File analyzed:
-    {self.filename}
-
-    Total findings: {total_hits}
-
-    Findings by category:
-    {summary_block}
-
-    Instructions:
-    - Base your analysis strictly on the findings above.
-    - Do not invent artifacts.
-    - Provide a concise professional assessment.
-    - Keep the response under 200 words.
-    """
-
-        return final_prompt.strip()
 
 
     def save_ai_output(self, text):
@@ -2492,39 +2087,6 @@ class HexwalkTUI:
             on_key=lambda k: self.save_ai_output(ai_text) if k == ord("s") else None
         )
 
-    def select_from_list(self, title, options, current):
-        h, w = self.stdscr.getmaxyx()
-        modal_h = min(10, h - 4)
-        modal_w = 50
-        modal_y = (h - modal_h) // 2
-        modal_x = (w - modal_w) // 2
-
-        win = self.stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
-        win.keypad(True)
-
-        idx = options.index(current) if current in options else 0
-
-        while True:
-            win.clear()
-            win.box()
-            draw_box(win, modal_h, modal_w, self.box)
-            win.addstr(0, 2, f" {title} ", curses.A_BOLD)
-
-            for i, opt in enumerate(options[: modal_h - 4]):
-                attr = curses.A_REVERSE if i == idx else curses.A_NORMAL
-                win.addstr(2 + i, 2, opt[: modal_w - 4], attr)
-
-            win.refresh()
-            key = win.getch()
-
-            if key in (10, 13):
-                return options[idx]
-            elif key == 27:
-                return current
-            elif key == curses.KEY_UP:
-                idx = max(0, idx - 1)
-            elif key == curses.KEY_DOWN:
-                idx = min(len(options) - 1, idx + 1)
 
     def confirm_quit(self):
         # --------------------------------------------------
@@ -2808,22 +2370,6 @@ class HexwalkTUI:
         max_offset = max(0, len(rows) - 1)
         self.cat_offset = max(0, min(self.cat_offset, max_offset))
 
-    def save_category_scroll(self):
-        sel = self.current_category_selection()
-        if not sel or sel["mode"] != "category":
-            return
-
-        key = sel["category"]
-        self.category_scroll_state[key] = (self.cat_i, self.cat_offset)
-
-    def restore_category_scroll(self):
-        sel = self.current_category_selection()
-        if not sel or sel["mode"] != "category":
-            return
-
-        key = sel["category"]
-        if key in self.category_scroll_state:
-            self.cat_i, self.cat_offset = self.category_scroll_state[key]
 
     # ---------------- HEADERS -----------------
     def draw_top_header(self, title):
@@ -3162,7 +2708,6 @@ class HexwalkTUI:
                 if highlight_start < highlight_end:
                     for abs_pos in range(highlight_start, highlight_end):
                         j = abs_pos - line_start_abs
-                        group_index = j // GROUP_SIZE
 
                         # Hex highlight
                         HEX_START_X = 2 + 10  # offset + two spaces
@@ -3343,13 +2888,6 @@ class HexwalkTUI:
             elif key == curses.KEY_PPAGE:  # Page Up
                 offset = max(0, offset - visible_h)
 
-    # ---------------- HITS COUNT -----------------
-    def category_hit_count(self, category):
-        hits = self.findings.get(category, [])
-        if not self.filter_text:
-            return len(hits)
-        ft = self.filter_text.lower()
-        return sum(1 for h in hits if ft in h["string"].lower())
 
     # ---------------- CATEGORY NAME -----------------
     def format_category_name(self, name):
@@ -4195,14 +3733,6 @@ class HexwalkTUI:
             elif key == ord("K"):
                 self.show_keyword_category_modal()
 
-
-# ---------------- PROGRESS BAR -----------------
-
-def print_progress(pct):
-    width = 40
-    filled = int(width * pct)
-    bar = "#" * filled + "-" * (width - filled)
-    print(f"\rScanning: [{bar}] {pct*100:5.1f}%", end="", flush=True)
 
 # ---------------- MAIN -----------------
 def main():
