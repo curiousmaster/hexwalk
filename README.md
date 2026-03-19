@@ -95,10 +95,6 @@ git clone git@github.com:curiousmaster/hexwalk.git
 cd hexwalk
 ```
 
-Install php requirements (_you may have to use a venv environment_):
-
-```
-pip install -r requirements.txt
 ```
 
 Install into `/usr/local`:
