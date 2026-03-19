@@ -107,11 +107,17 @@ COLOR_TOPHEADER_COL2 = curses.COLOR_BLUE
 COLOR_HEADER_COL1 = curses.COLOR_WHITE
 COLOR_HEADER_COL2 = curses.COLOR_BLACK
 
-
 CAT_W = 32
 DETAILS_W = 50
 HITS_MIN_W = 10
 SEP = 2
+
+TYPE_INDICATOR = {
+    "plain": ( "[p]", 10 ),
+    "regex": ( "[r]", 11 ),
+    "yara":  ( "[y]", 12 ),
+    "multi": ( "[m]", 13 ),
+}
 
 # ---------------- HELPERS -----------------
 
@@ -1388,6 +1394,10 @@ class HexwalkTUI:
         curses.init_pair(COLOR_STATUS, COLOR_STATUS_COL1, COLOR_STATUS_COL2) 
         curses.init_pair(COLOR_TOPHEADER, COLOR_TOPHEADER_COL1, COLOR_TOPHEADER_COL2)
         curses.init_pair(COLOR_HEADER, COLOR_HEADER_COL1, COLOR_HEADER_COL2)
+        curses.init_pair(10, 222, -1)  # plain
+        curses.init_pair(11, 222, -1)  # regex
+        curses.init_pair(12, 222, -1)  # yara
+        curses.init_pair(13, 222, -1)  # multi
         self.stdscr.keypad(True)
 
     # ---------------- HELPERS -----------------
@@ -2619,13 +2629,18 @@ class HexwalkTUI:
         Build tree structure from self.findings only.
 
         Tree levels:
-          domain
+        domain
             └─ subcategory
-                 └─ keyword
+                └─ keyword
 
-        Each node includes hit counts and expansion state.
+        Each node includes:
+        - hit counts
+        - expansion state
+        - match_type (plain / regex / yara / multi)
         """
 
+        from collections import defaultdict
+        import string
 
         tree = []
         tree_filter = self.tree_filter.lower() if self.tree_filter else None
@@ -2642,7 +2657,26 @@ class HexwalkTUI:
             domain, subcat = category.split("/", 1)
 
             for hit in hits:
-                key = hit["match_key"]
+                key = hit.get("match_key", "")
+                if not key:
+                    debug_log("EMPTY KEY DETECTED: {}",repr(hit.get("match_key")))
+                else:
+                    debug_log(f"KEY: {key}")
+
+                # --- normalize ---
+                if isinstance(key, bytes):
+                    key = key.decode(errors="ignore")
+
+                # Remove control chars (THIS is the real fix)
+                key = "".join(c for c in key if c.isprintable())
+
+                key = key.strip()
+
+                # Hard fallback if empty or invisible
+                if not key:
+                    raw = hit.get("context", {}).get("bytes_hex", "")
+                    key = f"<hex:{raw[:8]}>" if raw else "<binary>"
+
                 grouped[domain][subcat][key].append(hit)
 
         # -------------------------------------------------
@@ -2650,6 +2684,7 @@ class HexwalkTUI:
         # -------------------------------------------------
         for domain in sorted(grouped.keys()):
             domain_total = 0
+
             domain_node = {
                 "type": "domain",
                 "name": domain,
@@ -2661,6 +2696,7 @@ class HexwalkTUI:
 
             for subcat in sorted(grouped[domain].keys()):
                 sub_total = 0
+
                 sub_node = {
                     "type": "subcategory",
                     "name": subcat,
@@ -2682,7 +2718,18 @@ class HexwalkTUI:
                     if count == 0 and not self.show_all:
                         continue
 
+                    # -------------------------------------------------
+                    # Extract match types
+                    # -------------------------------------------------
+                    types = {h.get("match_type", "plain") for h in hits}
+
+                    if len(types) == 1:
+                        match_type = next(iter(types))
+                    else:
+                        match_type = "multi"
+
                     sub_total += count
+
                     sub_node["children"].append({
                         "type": "keyword",
                         "name": key,
@@ -2690,6 +2737,7 @@ class HexwalkTUI:
                         "parent": f"{domain}/{subcat}",
                         "count": count,
                         "hits": hits,
+                        "match_type": match_type,
                     })
 
                 if sub_total == 0 and not self.show_all:
@@ -2706,6 +2754,7 @@ class HexwalkTUI:
             tree.append(domain_node)
 
         return tree
+
 
     def filtered_hits(self):
         """
@@ -3350,7 +3399,7 @@ class HexwalkTUI:
         self.clamp_category_index()
 
         # ---------- Layout constants ----------
-        HITS_MIN_W = 10
+        HITS_MIN_W = 40
         DETAILS_MIN_W = 50
         SEP_PAD = 1
 
@@ -3438,6 +3487,7 @@ class HexwalkTUI:
                     if node["expanded"]
                     else self.arrows["collapsed"]
                 )
+
                 label = f"{arrow} [{node['count']:>{dw}}] {node['display']}"
                 attr |= curses.A_BOLD
 
@@ -3450,8 +3500,9 @@ class HexwalkTUI:
                 label = f"  {arrow} [{node['count']:>{sw}}] {node['display']}"
 
             elif node["type"] == "keyword":
-                label = f"      [{node['count']:>{kw}}] {node['name']}"
-                attr |= curses.A_ITALIC
+                symbol, color_id = TYPE_INDICATOR.get(node.get("match_type"), ("?", COLOR_CAT))
+                label = f"      [{node['count']:>{kw}}] {symbol} {node['name']}"
+                attr |= curses.color_pair(color_id)
 
             if idx == self.cat_i and self.pane == 0:
                 attr |= curses.A_REVERSE
