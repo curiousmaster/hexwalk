@@ -710,6 +710,26 @@ def generate_metadata(file_path, findings):
         "total_hits": total_hits,
     }
 
+def json_safe(obj):
+    """
+    Recursively convert objects into JSON-safe types.
+    """
+
+    if isinstance(obj, bytes):
+        return obj.hex()   # or obj.decode(errors="ignore")
+
+    elif isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+
+    elif isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+
+    elif isinstance(obj, tuple):
+        return tuple(json_safe(v) for v in obj)
+
+    return obj
+
+
 def write_export(findings, filename, file_path):
     out = f"hexwalk_{filename}_export.json"
 
@@ -722,7 +742,7 @@ def write_export(findings, filename, file_path):
     }
 
     with open(out, "w", encoding="utf-8") as f:
-        json.dump(export_obj, f, indent=2)
+        json.dump(json_safe(export_obj), f, indent=2)
 
     return out
 
