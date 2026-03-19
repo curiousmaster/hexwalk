@@ -4,5 +4,6 @@ x
 *.tgz
 *.sh
 *.log
+*.python
 hexwalk_*.json
 hexwalk_*.txt
