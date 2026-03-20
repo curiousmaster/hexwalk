@@ -630,7 +630,6 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
                     "match_offset": start - ctx_start,
                     "match_length": length,
                     "match_type": "regex",
-#                    "match_key": match.group(0).decode("utf-8", errors="replace"),
                     "match_key": rule["pattern"],
                     "context": {
                         "offset": start,
