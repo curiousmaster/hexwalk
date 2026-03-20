@@ -17,11 +17,19 @@ BIN_SRC   = bin/hexwalk
 DATA_SRC  = share/hexwalk
 MAN_SRC   = documentation/hexwalk.1
 
-# Use this if you later create a lock file
 REQ_FILE ?= requirements.txt
-# REQ_FILE ?= requirements.lock
 
-.PHONY: all install uninstall clean venv requirements
+.PHONY: all install uninstall clean venv requirements check-root
+
+# ---------------------------------------------------------
+# Root check
+# ---------------------------------------------------------
+
+check-root:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "Error: This target must be run as root (use sudo)."; \
+		exit 1; \
+	fi
 
 # ---------------------------------------------------------
 # Default
@@ -55,29 +63,24 @@ requirements: venv
 # Install
 # ---------------------------------------------------------
 
-install: requirements
+install: check-root requirements
 	@echo "Installing hexwalk to $(PREFIX)..."
 
-	# Create directories
 	$(MKDIR_P) $(BINDIR)
 	$(MKDIR_P) $(SHAREDIR)
 	$(MKDIR_P) $(MANDIR)
 
-	# Install main script (NOT directly executable from /bin)
 	$(INSTALL_BIN) $(BIN_SRC) $(SHAREDIR)/hexwalk.py
 
-	# Install shared data (keywords, etc.)
 	@echo "Installing shared data..."
 	cp -r $(DATA_SRC)/* $(SHAREDIR)/
 	chmod -R ugo+r $(SHAREDIR)
 
-	# Create wrapper launcher
 	@echo "Creating wrapper..."
 	@echo '#!/bin/sh' > $(BINDIR)/hexwalk
 	@echo 'exec $(VENV_PY) $(SHAREDIR)/hexwalk.py "$$@"' >> $(BINDIR)/hexwalk
 	chmod +x $(BINDIR)/hexwalk
 
-	# Install man page
 	$(INSTALL_MAN) $(MAN_SRC) $(MANDIR)/hexwalk.1
 	@which mandb >/dev/null 2>&1 && mandb || true
 
@@ -87,7 +90,7 @@ install: requirements
 # Uninstall
 # ---------------------------------------------------------
 
-uninstall:
+uninstall: check-root
 	@echo "Removing hexwalk from $(PREFIX)..."
 
 	rm -f $(BINDIR)/hexwalk
@@ -97,7 +100,7 @@ uninstall:
 	@echo "Uninstall complete."
 
 # ---------------------------------------------------------
-# Clean (local project only)
+# Clean
 # ---------------------------------------------------------
 
 clean:
