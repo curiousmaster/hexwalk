@@ -3025,7 +3025,28 @@ class HexwalkTUI:
         # ==========================================================
         # HITS (FIXED)
         # ==========================================================
-        self.draw_header(1, hits_x, hits_w, "Hits")
+        sel = self.current_category_selection()
+
+        if sel and sel["mode"] == "keyword":
+            keyword = sel["keyword"]
+
+            # truncate to avoid UI overflow
+            max_len = 40
+            if len(keyword) > max_len:
+                keyword = keyword[:max_len - 3] + "..."
+
+            title = f"Hits [{keyword}]"
+
+        elif sel and sel["mode"] == "subcategory":
+            title = f"Hits [{sel['category'].split('/')[-1]}]"
+
+        elif sel and sel["mode"] == "domain":
+            title = f"Hits [{sel['domain']}]"
+
+        else:
+            title = "Hits"
+
+        self.draw_header(1, hits_x, hits_w, title)
 
         hit_height = h - 3
 
