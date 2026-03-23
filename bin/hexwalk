@@ -1051,6 +1051,22 @@ class HexwalkTUI:
             "keyword": 1,
         }
 
+        # ---------- Heatmap gradient (low → high) ----------
+        self.heatmap_colors = [
+            231, 230, 229, 228, 227, 226,
+            201, 200, 199, 198, 197, 196
+        ]
+
+        # Create color pairs dynamically
+        self.heatmap_pairs = []
+
+        base_pair_id = 50  # avoid collision with existing pairs
+
+        for i, color in enumerate(self.heatmap_colors):
+            pair_id = base_pair_id + i
+            curses.init_pair(pair_id, 0, color)  # foreground=black, background=color
+            self.heatmap_pairs.append(curses.color_pair(pair_id))
+
         # ---------- Init curses ----------
         self.init_curses()
 
@@ -1128,6 +1144,165 @@ class HexwalkTUI:
                         )
 
         self.count_widths = widths
+
+    def build_heatmap(self, hits, width):
+        """
+        Build heatmap string for given hits and screen width.
+        """
+
+        if not hits or width <= 0:
+            return ""
+
+        file_size = len(self.binary)
+        if file_size == 0:
+            return ""
+
+        # Number of blocks = width
+        block_size = max(1, file_size // width)
+
+        blocks = [0] * width
+
+        for h in hits:
+            offset = h.get("context", {}).get("offset", 0)
+
+            idx = min(width - 1, offset // block_size)
+            blocks[idx] += 1
+
+        max_hits = max(blocks) or 1
+
+        # Normalize 0.0–1.0
+        normalized = [b / max_hits for b in blocks]
+
+        return normalized
+
+    def render_heatmap_line(self, normalized):
+        """
+        Convert normalized values into visual heatmap.
+        """
+
+        # ASCII gradient (safe for all terminals)
+        levels = " .:-=+*#%@"
+
+        out = ""
+
+        for v in normalized:
+            idx = int(v * (len(levels) - 1))
+            out += levels[idx]
+
+        return out
+
+    def show_heatmap(self):
+        import math
+
+        h, w = self.stdscr.getmaxyx()
+
+        # ---------- Modal geometry ----------
+        mh = min(40, h - 4)
+        mw = min(120, w - 4)
+        y = (h - mh) // 2
+        x = (w - mw) // 2
+
+        win = curses.newwin(mh, mw, y, x)
+        win.keypad(True)
+
+        # ---------- Heatmap grid size ----------
+        grid_h = mh - 6
+        grid_w = mw - 6
+
+        file_size = len(self.binary)
+
+        # ---------- Select hits (scope-aware) ----------
+        hits = self.filtered_hits()
+
+        # Fallback to ALL if nothing selected
+        if not hits:
+            hits = []
+            for cat_hits in self.findings.values():
+                hits.extend(cat_hits)
+
+        # ---------- Build density map ----------
+        total_cells = grid_h * grid_w
+        if total_cells <= 0:
+            return
+
+        bytes_per_cell = max(1, file_size // total_cells)
+
+        density = [0] * total_cells
+
+        for h in hits:
+            offset = h["context"]["offset"]
+            idx = min(total_cells - 1, offset // bytes_per_cell)
+            density[idx] += 1
+
+        max_density = max(density) if density else 1
+
+        # ---------- Color scaling ----------
+        def density_to_color(val):
+            if max_density == 0:
+                return curses.color_pair(0)
+
+            ratio = val / max_density
+
+            idx = int(ratio * (len(self.heatmap_pairs) - 1))
+            idx = max(0, min(len(self.heatmap_pairs) - 1, idx))
+
+            return self.heatmap_pairs[idx]
+
+        # ---------- Determine scope label ----------
+        sel = self.current_category_selection()
+
+        if sel:
+            if sel["mode"] == "keyword":
+                scope = f"Keyword: {sel['keyword']}"
+            elif sel["mode"] == "subcategory":
+                scope = f"Subcategory: {sel['category']}"
+            elif sel["mode"] == "domain":
+                scope = f"Domain: {sel['domain']}"
+            else:
+                scope = "All"
+        else:
+            scope = "All"
+
+        # ---------- Render loop ----------
+        while True:
+            win.erase()
+            win.box()
+            draw_box(win, mh, mw, self.box)
+
+            # Title
+            title = f" Heatmap [{scope}] "
+            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+
+            # ---------- Draw grid ----------
+            for gy in range(grid_h):
+                for gx in range(grid_w):
+                    idx = gy * grid_w + gx
+                    val = density[idx]
+
+                    color = density_to_color(val)
+
+                    try:
+                        win.addstr(3 + gy, 3 + gx, "·", color)
+                    except curses.error:
+                        pass
+
+            # ---------- Legend ----------
+            legend = "Low → High density"
+            win.addstr(mh - 3, 2, legend[:mw - 4])
+
+            status = "[q] Close  |  Scope follows selection"
+            win.addstr(
+                mh - 2,
+                2,
+                status[:mw - 4],
+                curses.color_pair(COLOR_STATUS) | curses.A_BOLD
+            )
+
+            win.refresh()
+
+            key = win.getch()
+            if key in (ord("q"), 27):
+                break
 
     def draw_empty_layout(self):
         """
@@ -2781,6 +2956,9 @@ class HexwalkTUI:
             "  /              : Filter keywords globally (tree + counts)",
             "                   (active filter shown in header)",
             "",
+            "Heatmap:",
+            "  m              : Show Heatmap"
+            "",
             "Actions:",
             "  s              : Show summary page",
             "  e              : Export findings to JSON",
@@ -3163,6 +3341,7 @@ class HexwalkTUI:
         status = (
             "Tab pane | Enter open | / filter | "
             "K Keyword | d details | [ ] resize | "
+            "H Heatmap | "
             "e export | h help | q quit"
         )
 
@@ -3658,6 +3837,12 @@ class HexwalkTUI:
                     hits = self.filtered_hits()
                     if hits:
                         self.hit_i = max(self.hit_i - 1, 0)
+
+            # ==================================================
+            # HEATMAP
+            # ==================================================
+            elif key == ord("H"):
+                self.show_heatmap()
 
             # ==================================================
             # FILTER
