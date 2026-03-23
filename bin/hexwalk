@@ -1214,9 +1214,15 @@ class HexwalkTUI:
         density = [0] * total_cells
 
         for hit in hits:
-            offset = hit["context"]["offset"]
-            idx = min(total_cells - 1, offset // bytes_per_cell)
-            density[idx] += hit.get("match_length", 1)
+            start = hit["context"]["offset"]
+            length = hit.get("match_length", 1)
+            end = start + length
+
+            start_idx = start // bytes_per_cell
+            end_idx = end // bytes_per_cell
+
+            for idx in range(start_idx, min(end_idx + 1, total_cells)):
+                density[idx] += 1
 
         max_density = max(density) if density else 1
 
