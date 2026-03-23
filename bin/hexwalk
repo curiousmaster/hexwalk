@@ -1053,7 +1053,7 @@ class HexwalkTUI:
 
         # ---------- Heatmap gradient (low → high) ----------
         self.heatmap_colors = [
-            231, 230, 229, 228, 227, 226,
+            18, 231, 230, 229, 228, 227, 226,
             201, 200, 199, 198, 197, 196
         ]
 
@@ -1066,6 +1066,8 @@ class HexwalkTUI:
             pair_id = base_pair_id + i
             curses.init_pair(pair_id, 0, color)  # foreground=black, background=color
             self.heatmap_pairs.append(curses.color_pair(pair_id))
+
+        self.heatmap_empty_color = self.heatmap_pairs[0]
 
         # ---------- Init curses ----------
         self.init_curses()
@@ -1175,22 +1177,6 @@ class HexwalkTUI:
 
         return normalized
 
-    def render_heatmap_line(self, normalized):
-        """
-        Convert normalized values into visual heatmap.
-        """
-
-        # ASCII gradient (safe for all terminals)
-        levels = " .:-=+*#%@"
-
-        out = ""
-
-        for v in normalized:
-            idx = int(v * (len(levels) - 1))
-            out += levels[idx]
-
-        return out
-
     def show_heatmap(self):
         import math
 
@@ -1206,7 +1192,7 @@ class HexwalkTUI:
         win.keypad(True)
 
         # ---------- Heatmap grid size ----------
-        grid_h = mh - 6
+        grid_h = mh - 8   # leave space for legend + footer
         grid_w = mw - 6
 
         file_size = len(self.binary)
@@ -1214,7 +1200,7 @@ class HexwalkTUI:
         # ---------- Select hits (scope-aware) ----------
         hits = self.filtered_hits()
 
-        # Fallback to ALL if nothing selected
+        # fallback to ALL if empty selection
         if not hits:
             hits = []
             for cat_hits in self.findings.values():
@@ -1232,19 +1218,25 @@ class HexwalkTUI:
         for h in hits:
             offset = h["context"]["offset"]
             idx = min(total_cells - 1, offset // bytes_per_cell)
-            density[idx] += 1
+
+            # weighted by match length (better signal)
+            density[idx] += h.get("match_length", 1)
 
         max_density = max(density) if density else 1
 
-        # ---------- Color scaling ----------
+        # ---------- Density → color ----------
         def density_to_color(val):
-            if max_density == 0:
-                return curses.color_pair(0)
+            # ---------- No hits ----------
+            if val == 0:
+                return self.heatmap_empty_color  # force dedicated color
 
-            ratio = val / max_density
+            # ---------- Scale only non-zero values ----------
+            ratio = val / max_density if max_density > 0 else 0
 
-            idx = int(ratio * (len(self.heatmap_pairs) - 1))
-            idx = max(0, min(len(self.heatmap_pairs) - 1, idx))
+            # shift index by +1 to skip "empty" color
+            idx = 1 + int(ratio * (len(self.heatmap_pairs) - 2))
+
+            idx = max(1, min(len(self.heatmap_pairs) - 1, idx))
 
             return self.heatmap_pairs[idx]
 
@@ -1269,7 +1261,7 @@ class HexwalkTUI:
             win.box()
             draw_box(win, mh, mw, self.box)
 
-            # Title
+            # ---------- Title ----------
             title = f" Heatmap [{scope}] "
             win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
 
@@ -1282,15 +1274,53 @@ class HexwalkTUI:
                     color = density_to_color(val)
 
                     try:
-                        win.addstr(3 + gy, 3 + gx, "·", color)
+                        win.addstr(3 + gy, 3 + gx, " ", color)
                     except curses.error:
                         pass
 
-            # ---------- Legend ----------
-            legend = "Low → High density"
-            win.addstr(mh - 3, 2, legend[:mw - 4])
+            # ==================================================
+            # LEGEND (gradient bar)
+            # ==================================================
+            legend_y = mh - 4
+            legend_x = 3              # align with heatmap grid
+            CELL_W = self.heatmap_cell_width if hasattr(self, "heatmap_cell_width") else 2
 
-            status = "[q] Close  |  Scope follows selection"
+            # Total width available (same as grid)
+            legend_width = grid_w
+            colors = self.heatmap_pairs[1:]
+
+            # Number of color steps
+            num_colors = len(colors)
+
+            # How many columns each color should occupy
+            block_w = max(1, legend_width // num_colors)
+
+            # ---------- Draw stretched legend ----------
+            x_cursor = legend_x
+
+            for i, col in enumerate(colors):
+                # Last block takes remaining space to avoid gaps
+                if i == num_colors - 1:
+                    width = legend_x + legend_width - x_cursor
+                else:
+                    width = block_w
+
+                try:
+                    win.addstr(legend_y, x_cursor, " " * width, col)
+                except curses.error:
+                    pass
+
+                x_cursor += width
+
+            # ---------- Labels ----------
+            win.addstr(legend_y + 1, legend_x, "Low", curses.A_DIM)
+
+            high_label_x = legend_x + legend_width - len("High")
+            if high_label_x > legend_x:
+                win.addstr(legend_y + 1, high_label_x, "High", curses.A_DIM)
+
+            # ---------- Footer ----------
+            status = "[q] Close | Scope follows selection"
             win.addstr(
                 mh - 2,
                 2,
@@ -1303,6 +1333,7 @@ class HexwalkTUI:
             key = win.getch()
             if key in (ord("q"), 27):
                 break
+
 
     def draw_empty_layout(self):
         """
