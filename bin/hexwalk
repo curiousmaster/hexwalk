@@ -1178,7 +1178,7 @@ class HexwalkTUI:
         return normalized
 
     def show_heatmap(self):
-        import math
+        import curses
 
         h, w = self.stdscr.getmaxyx()
 
@@ -1191,22 +1191,20 @@ class HexwalkTUI:
         win = curses.newwin(mh, mw, y, x)
         win.keypad(True)
 
-        # ---------- Heatmap grid size ----------
-        grid_h = mh - 8   # leave space for legend + footer
+        # ---------- Grid ----------
+        grid_h = mh - 8
         grid_w = mw - 6
 
         file_size = len(self.binary)
 
-        # ---------- Select hits (scope-aware) ----------
+        # ---------- Hits (scope-aware) ----------
         hits = self.filtered_hits()
-
-        # fallback to ALL if empty selection
         if not hits:
             hits = []
-            for cat_hits in self.findings.values():
-                hits.extend(cat_hits)
+            for v in self.findings.values():
+                hits.extend(v)
 
-        # ---------- Build density map ----------
+        # ---------- Density ----------
         total_cells = grid_h * grid_w
         if total_cells <= 0:
             return
@@ -1215,32 +1213,45 @@ class HexwalkTUI:
 
         density = [0] * total_cells
 
-        for h in hits:
-            offset = h["context"]["offset"]
+        for hit in hits:
+            offset = hit["context"]["offset"]
             idx = min(total_cells - 1, offset // bytes_per_cell)
-
-            # weighted by match length (better signal)
-            density[idx] += h.get("match_length", 1)
+            density[idx] += hit.get("match_length", 1)
 
         max_density = max(density) if density else 1
 
-        # ---------- Density → color ----------
+        # ---------- Cursor ----------
+        cursor_x = 0
+        cursor_y = 0
+
+        # ---------- Helpers ----------
         def density_to_color(val):
-            # ---------- No hits ----------
-            if val == 0:
-                return self.heatmap_empty_color  # force dedicated color
+            if max_density == 0:
+                return curses.color_pair(0)
 
-            # ---------- Scale only non-zero values ----------
-            ratio = val / max_density if max_density > 0 else 0
-
-            # shift index by +1 to skip "empty" color
-            idx = 1 + int(ratio * (len(self.heatmap_pairs) - 2))
-
-            idx = max(1, min(len(self.heatmap_pairs) - 1, idx))
-
+            ratio = val / max_density
+            idx = int(ratio * (len(self.heatmap_pairs) - 1))
+            idx = max(0, min(len(self.heatmap_pairs) - 1, idx))
             return self.heatmap_pairs[idx]
 
-        # ---------- Determine scope label ----------
+        def cell_to_offset(cx, cy):
+            idx = cy * grid_w + cx
+            return min(file_size - 1, idx * bytes_per_cell)
+
+        def get_closest_hit(offset):
+            if not hits:
+                return None, None
+
+            idx = min(
+                range(len(hits)),
+                key=lambda i: abs(hits[i]["context"]["offset"] - offset)
+            )
+
+            hit = hits[idx]
+            distance = abs(hit["context"]["offset"] - offset)
+            return hit, distance
+
+        # ---------- Scope label ----------
         sel = self.current_category_selection()
 
         if sel:
@@ -1255,17 +1266,33 @@ class HexwalkTUI:
         else:
             scope = "All"
 
-        # ---------- Render loop ----------
+        # ---------- Loop ----------
         while True:
             win.erase()
             win.box()
             draw_box(win, mh, mw, self.box)
 
-            # ---------- Title ----------
-            title = f" Heatmap [{scope}] "
-            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
+            # Title
+            win.addstr(1, 2, f" Heatmap [{scope}] ", curses.A_BOLD)
 
-            # ---------- Draw grid ----------
+            # Offset + closest hit
+            current_offset = cell_to_offset(cursor_x, cursor_y)
+            closest_hit, distance = get_closest_hit(current_offset)
+
+            line = f"Offset: 0x{current_offset:08X}"
+
+            if closest_hit:
+                hit_offset = closest_hit["context"]["offset"]
+                key = closest_hit.get("match_key", "")
+
+                if len(key) > 30:
+                    key = key[:27] + "..."
+
+                line += f" | Closest: 0x{hit_offset:08X} (Δ=0x{distance:X}) [{key}]"
+
+            win.addnstr(2, 2, line, mw - 4)
+
+            # ---------- Draw heatmap ----------
             for gy in range(grid_h):
                 for gx in range(grid_w):
                     idx = gy * grid_w + gx
@@ -1273,66 +1300,127 @@ class HexwalkTUI:
 
                     color = density_to_color(val)
 
+                    if gx == cursor_x and gy == cursor_y:
+                        attr = color | curses.A_BOLD
+                        char = "█"
+                    else:
+                        attr = color
+                        char = " "
+
                     try:
-                        win.addstr(3 + gy, 3 + gx, " ", color)
+                        win.addstr(3 + gy, 3 + gx, char, attr)
                     except curses.error:
                         pass
 
-            # ==================================================
-            # LEGEND (gradient bar)
-            # ==================================================
+            # ---------- Legend ----------
             legend_y = mh - 4
-            legend_x = 3              # align with heatmap grid
-            CELL_W = self.heatmap_cell_width if hasattr(self, "heatmap_cell_width") else 2
+            usable_colors = self.heatmap_pairs[1:]  # skip lowest (231)
 
-            # Total width available (same as grid)
-            legend_width = grid_w
-            colors = self.heatmap_pairs[1:]
+            num_colors = len(usable_colors)
 
-            # Number of color steps
-            num_colors = len(colors)
+            for gx in range(grid_w):
+                # map position → color index
+                ratio = gx / (grid_w - 1) if grid_w > 1 else 0
+                idx = int(ratio * (num_colors - 1))
+                idx = max(0, min(num_colors - 1, idx))
 
-            # How many columns each color should occupy
-            block_w = max(1, legend_width // num_colors)
-
-            # ---------- Draw stretched legend ----------
-            x_cursor = legend_x
-
-            for i, col in enumerate(colors):
-                # Last block takes remaining space to avoid gaps
-                if i == num_colors - 1:
-                    width = legend_x + legend_width - x_cursor
-                else:
-                    width = block_w
+                color = usable_colors[idx]
 
                 try:
-                    win.addstr(legend_y, x_cursor, " " * width, col)
+                    win.addstr(legend_y, 3 + gx, " ", color)
                 except curses.error:
                     pass
 
-                x_cursor += width
-
-            # ---------- Labels ----------
-            win.addstr(legend_y + 1, legend_x, "Low", curses.A_DIM)
-
-            high_label_x = legend_x + legend_width - len("High")
-            if high_label_x > legend_x:
-                win.addstr(legend_y + 1, high_label_x, "High", curses.A_DIM)
-
-            # ---------- Footer ----------
-            status = "[q] Close | Scope follows selection"
-            win.addstr(
+            # ---------- Status ----------
+            status = "Arrows move | Mouse click jump | Enter jump | q close"
+            win.addnstr(
                 mh - 2,
                 2,
-                status[:mw - 4],
+                status,
+                mw - 4,
                 curses.color_pair(COLOR_STATUS) | curses.A_BOLD
             )
 
             win.refresh()
 
             key = win.getch()
+
+            # ---------- Exit ----------
             if key in (ord("q"), 27):
                 break
+
+            # ---------- Keyboard navigation ----------
+            elif key == curses.KEY_LEFT:
+                cursor_x = max(0, cursor_x - 1)
+
+            elif key == curses.KEY_RIGHT:
+                cursor_x = min(grid_w - 1, cursor_x + 1)
+
+            elif key == curses.KEY_UP:
+                cursor_y = max(0, cursor_y - 1)
+
+            elif key == curses.KEY_DOWN:
+                cursor_y = min(grid_h - 1, cursor_y + 1)
+
+            # ---------- Enter jump ----------
+            elif key in (10, 13):
+                target_offset = cell_to_offset(cursor_x, cursor_y)
+
+                if not hits:
+                    fake_hit = {
+                        "context": {"offset": target_offset},
+                        "match_length": 1,
+                        "match_type": "raw",
+                        "match_key": "<cursor>",
+                    }
+                    return self.show_hit_modal([fake_hit], 0)
+
+                closest_idx = min(
+                    range(len(hits)),
+                    key=lambda i: abs(
+                        hits[i]["context"]["offset"] - target_offset
+                    )
+                )
+
+                return self.show_hit_modal(hits, closest_idx)
+
+            # ---------- Mouse support ----------
+            elif key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+                except curses.error:
+                    continue
+
+                grid_origin_y = 3
+                grid_origin_x = 3
+
+                gx = mx - (x + grid_origin_x)
+                gy = my - (y + grid_origin_y)
+
+                if 0 <= gx < grid_w and 0 <= gy < grid_h:
+                    cursor_x = gx
+                    cursor_y = gy
+
+                    if bstate & curses.BUTTON1_CLICKED:
+                        target_offset = cell_to_offset(cursor_x, cursor_y)
+
+                        if not hits:
+                            fake_hit = {
+                                "context": {"offset": target_offset},
+                                "match_length": 1,
+                                "match_type": "raw",
+                                "match_key": "<cursor>",
+                            }
+                            return self.show_hit_modal([fake_hit], 0)
+
+                        closest_idx = min(
+                            range(len(hits)),
+                            key=lambda i: abs(
+                                hits[i]["context"]["offset"] - target_offset
+                            )
+                        )
+
+                        return self.show_hit_modal(hits, closest_idx)
 
 
     def draw_empty_layout(self):
@@ -1433,6 +1521,9 @@ class HexwalkTUI:
         curses.init_pair(12, 222, -1)  # yara
         curses.init_pair(13, 222, -1)  # multi
         self.stdscr.keypad(True)
+
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+        curses.mouseinterval(0)
 
     # ---------------- HELPERS -----------------
 
