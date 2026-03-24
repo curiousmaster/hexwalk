@@ -123,6 +123,18 @@ TYPE_INDICATOR = {
 
 # ---------------- HELPERS -----------------
 
+def make_json_safe(obj):
+    if isinstance(obj, bytes):
+        return obj.decode("latin1", errors="replace")
+
+    elif isinstance(obj, dict):
+        return {k: make_json_safe(v) for k, v in obj.items()}
+
+    elif isinstance(obj, list):
+        return [make_json_safe(v) for v in obj]
+
+    return obj
+
 def debug_init(cfg):
     global DEBUG_CFG
     DEBUG_CFG = cfg.get("debug", {})
@@ -2847,91 +2859,24 @@ class HexwalkTUI:
             safe_width,
             curses.color_pair(COLOR_HEADER) | curses.A_BOLD
         )
-    # ---------------- SUMMARY -----------------
-    def build_summary(self):
-        """
-        Build a summary structure:
-        {
-            category: {
-                "total": int,
-                "keywords": { keyword: count }
-            }
-        }
-        """
-        summary = {}
 
-        for category, hits in self.findings.items():
-            cat_summary = {
-                "total": len(hits),
-                "keywords": {}
-            }
-
-            for h in hits:
-                kw = (
-                    h["match_key"][6:]
-                    if h["match_key"].startswith("regex:")
-                    else h["match_key"]
-                )
-                cat_summary["keywords"][kw] = (
-                    cat_summary["keywords"].get(kw, 0) + 1
-                )
-
-            summary[category] = cat_summary
-
-        return summary
-
-    def export_summary_text(self, lines):
-        fname = f"hexwalk_{self.safe_basename()}_summary.txt"
-        with open(fname, "w", encoding="utf-8") as f:
-            for line in lines:
-                f.write(line + "\n")
-
-        h, w = self.stdscr.getmaxyx()
-        msg = f"Summary exported to {fname}"
-        self.stdscr.addstr(
-            h - 2,
-            0,
-            msg[:w - 1],
-            curses.A_BOLD | curses.color_pair(COLOR_STATUS)
-        )
-        self.stdscr.refresh()
-        curses.napms(1200)
 
     def show_summary(self):
-        summary = self.build_summary()
-        lines = []
+        """
+        Use CLI summary generator for consistency.
+        """
 
-        total_hits = sum(cat["total"] for cat in summary.values())
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        summary_text = generate_summary_text(
+            self.findings,
+            self.filename,
+            self.file_path
+        )
 
-        lines.append("HexWalk Summary")
-        lines.append("=" * 15)
-        lines.append("")
-        lines.append(f"Analyzed file : {self.filename}")
-        lines.append(f"Generated     : {ts}")
-        lines.append("")
-        lines.append(f"Total categories : {len(summary)}")
-        lines.append(f"Total hits       : {total_hits}")
-        lines.append("")
-
-        for category in sorted(summary.keys()):
-            cat_name = self.format_category_name(category)
-            cat_data = summary[category]
-
-            lines.append(f"Category: {cat_name} ({cat_data['total']} hits)")
-            lines.append("-" * (len(lines[-1])))
-
-            for kw, cnt in sorted(
-                cat_data["keywords"].items(),
-                key=lambda x: x[1],
-                reverse=True
-            ):
-                lines.append(f"  {kw:<20} : {cnt}")
-
-            lines.append("")
+        lines = summary_text.splitlines()
 
         # ---- Screen loop ----
         offset = 0
+
         while True:
             self.stdscr.clear()
             h, w = self.stdscr.getmaxyx()
@@ -2940,11 +2885,7 @@ class HexwalkTUI:
                 idx = offset + i
                 if idx >= len(lines):
                     break
-                self.stdscr.addstr(
-                    i,
-                    0,
-                    lines[idx][:w - 1]
-                )
+                self.stdscr.addstr(i, 0, lines[idx][:w - 1])
 
             status = "[ q ] back   [ e ] export summary to text"
             self.stdscr.addstr(
@@ -2959,12 +2900,26 @@ class HexwalkTUI:
 
             if key in (ord("q"), 27):
                 break
+
             elif key == ord("e"):
-                self.export_summary_text(lines)
+                out = write_summary(summary_text, self.filename)
+
+                msg = f"Summary exported to {out}"
+                self.stdscr.addstr(
+                    h - 2,
+                    0,
+                    msg[:w - 1],
+                    curses.A_BOLD | curses.color_pair(COLOR_STATUS),
+                )
+                self.stdscr.refresh()
+                curses.napms(1200)
+
             elif key == curses.KEY_DOWN:
                 offset = min(offset + 1, max(0, len(lines) - h + 1))
+
             elif key == curses.KEY_UP:
                 offset = max(0, offset - 1)
+
 
     def visible_category_rows(self):
         rows = []
@@ -3343,29 +3298,6 @@ class HexwalkTUI:
             return name
         return base[0].upper() + base[1:]
 
-    # ---------------- EXPORT -----------------
-    def exportable_findings(self):
-        """
-        Return a JSON-safe version of findings.
-        Raw bytes are converted to hex strings.
-        """
-        out = {}
-
-        for category, hits in self.findings.items():
-            out[category] = []
-            for h in hits:
-                clean = dict(h)
-
-                # Fix context
-                ctx = dict(clean.get("context", {}))
-                if "bytes" in ctx:
-                    ctx["bytes_hex"] = ctx["bytes"].hex()
-                    del ctx["bytes"]
-
-                clean["context"] = ctx
-                out[category].append(clean)
-
-        return out
 
     # ---------------- DRAW -----------------
     def draw(self):
@@ -4169,8 +4101,28 @@ class HexwalkTUI:
 
             elif key == ord("e"):
                 fname = f"hexwalk_{self.safe_basename()}_export.json"
-                with open(fname, "w") as f:
-                    json.dump(self.exportable_findings(), f, indent=2)
+
+                meta = generate_metadata(self.file_path, self.findings)
+                safe_findings = make_findings_json_safe(self.findings)
+
+                export_obj = {
+                    "metadata": meta,
+                    "findings": safe_findings,
+                }
+
+                with open(fname, "w", encoding="utf-8") as f:
+                    json.dump(json_safe(export_obj), f, indent=2)
+
+                h, w = self.stdscr.getmaxyx()
+                msg = f"Exported to {fname}"
+                self.stdscr.addstr(
+                    h - 2,
+                    0,
+                    msg[:w - 1],
+                    curses.A_BOLD | curses.color_pair(COLOR_STATUS),
+                )
+                self.stdscr.refresh()
+                curses.napms(800)
 
                 h, w = self.stdscr.getmaxyx()
                 msg = f"Exported to {fname}"
