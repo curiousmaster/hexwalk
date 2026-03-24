@@ -63,6 +63,7 @@
 # ===================================================
 import sys
 import os
+import traceback
 import time
 import argparse
 import re
@@ -123,6 +124,22 @@ TYPE_INDICATOR = {
 
 # ---------------- HELPERS -----------------
 
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    try:
+        curses.endwin()
+    except:
+        pass
+
+    print("\n[HexWalk] Unexpected error occurred.")
+    print("Run with --debug for details.")
+
+    # Optional logging
+    with open("/tmp/hexwalk_error.log", "w") as f:
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+
+#sys.excepthook = handle_exception
+
 def make_json_safe(obj):
     if isinstance(obj, bytes):
         return obj.decode("latin1", errors="replace")
@@ -158,6 +175,7 @@ def debug_log(message, section=None):
         with open(logfile, "a") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {message}\n")
     except Exception:
+        debug_log(f"Unable to open config file")
         pass
 
 # --- CONFIG ---
@@ -358,6 +376,7 @@ def probe_ollama(url, timeout=5):
     except urllib.error.URLError as e:
         return False, [], str(e.reason)
     except Exception as e:
+        debug_log(f"Unable to connect to Ollama")
         return False, [], str(e)
 
 # --- TUI ---
@@ -852,7 +871,6 @@ def load_rules(base_dir: str):
     seen_regex = set()
 
     debug_log("Starting load_rules()")
-    debug_log(f"YARA_AVAILABLE: {YARA_AVAILABLE}")
 
     def process_txt_file(file: Path):
         category = file.parent.name
@@ -916,8 +934,6 @@ def load_rules(base_dir: str):
         category = file.parent.name
         subcategory = file.stem
 
-        debug_log(f"Attempting YARA compile: {file}", "yara")
-
         try:
             compiled = yara.compile(filepath=str(file))
 
@@ -928,8 +944,6 @@ def load_rules(base_dir: str):
                 "subcategory": subcategory,
                 "source": str(file),
             })
-
-            debug_log(f"Loaded YARA rule: {file}", "yara")
 
         except Exception as e:
             debug_log(f"YARA compile failed: {file} ({e})", "error")
@@ -942,8 +956,6 @@ def load_rules(base_dir: str):
             if not file.is_file():
                 continue
 
-            debug_log(f"Inspecting file: {file}", "search")
-
             if file.suffix == ".txt":
                 process_txt_file(file)
 
@@ -953,10 +965,6 @@ def load_rules(base_dir: str):
     # Scan base + user directories
     scan_directory(Path(base_dir))
     scan_directory(Path.home() / ".hexwalk" / "keywords")
-
-    debug_log(f"Total plain rules: {len(rules['plain'])}")
-    debug_log(f"Total regex rules: {len(rules['regex'])}")
-    debug_log(f"Total yara rules: {len(rules['yara'])}")
 
     return rules
 
@@ -995,7 +1003,6 @@ def od_bc_view(data, offset, keyword, context=64):
 class HexwalkTUI:
     def __init__(self, stdscr, binary, filename, file_path, keywords, show_all=False):
 
-        # ---------- Configuration state ----------
         self.config = load_config()
         debug_init(self.config)
 
@@ -2323,6 +2330,7 @@ class HexwalkTUI:
             )
 
         except Exception as e:
+            debug_log(f"Save failed: {e}")
             self.show_text_modal(
                 title="Save Failed",
                 text=str(e),
@@ -2527,6 +2535,7 @@ class HexwalkTUI:
                     modal.refresh()
 
         except Exception as e:
+            debug_log(f"AI error: {e}")
             return f"AI error:\n{e}"
 
         return "".join(content)
@@ -2676,10 +2685,6 @@ class HexwalkTUI:
 
             for hit in hits:
                 key = hit.get("match_key", "")
-                if not key:
-                    debug_log("EMPTY KEY DETECTED: {}",repr(hit.get("match_key")))
-                else:
-                    debug_log(f"KEY: {key}")
 
                 # --- normalize ---
                 if isinstance(key, bytes):
@@ -3856,6 +3861,7 @@ class HexwalkTUI:
             new_content = tmp_path.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
             self.show_text_modal("Error", f"Failed to read temp file:\n{e}")
+            debug_log(f"Failed to read temp file: {e}")
             tmp_path.unlink(missing_ok=True)
             return
 
@@ -4161,6 +4167,7 @@ class HexwalkTUI:
 
 # ---------------- MAIN -----------------
 def main():
+
     parser = argparse.ArgumentParser(
         description="Hexwalk – binary keyword scanner"
     )
