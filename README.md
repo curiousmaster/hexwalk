@@ -9,9 +9,9 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 ---
 ## Images
 <p float="center">
-<img height="160" alt="Hits" src="images/hexwalk_hits.png" />
-<img height="160" alt="Hex" src="images/hexwalk_hex.png" />
-<img height="160" alt="Heatmap" src="images/hexwalk_heatmap.png" />
+<img height="140" alt="Hits" src="images/hexwalk_hits.png" />
+<img height="140" alt="Hex" src="images/hexwalk_hex.png" />
+<img height="140" alt="Heatmap" src="images/hexwalk_heatmap.png" />
 </p>
 
 ## Key Features
