@@ -1525,6 +1525,27 @@ class HexwalkTUI:
             elif key == curses.KEY_DOWN:
                 cursor_y = min(grid_h - 1, cursor_y + 1)
 
+            elif key in (10, 13):  # ENTER
+                target_offset = cell_to_offset(cursor_x, cursor_y)
+
+                if not hits:
+                    fake_hit = {
+                        "context": {"offset": target_offset},
+                        "match_length": 1,
+                        "match_type": "raw",
+                        "match_key": "<cursor>",
+                    }
+                    return self.show_hit_modal([fake_hit], 0)
+
+                closest_idx = min(
+                    range(len(hits)),
+                    key=lambda i: abs(
+                        hits[i]["context"]["offset"] - target_offset
+                    )
+                )
+
+                self.show_hit_modal(hits, closest_idx)
+
             elif key == curses.KEY_MOUSE:
                 try:
                     _, mx, my, _, bstate = curses.getmouse()
