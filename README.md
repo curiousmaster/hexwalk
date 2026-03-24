@@ -26,7 +26,7 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 - Summary page with per-domain, per-subcategory, and per-keyword breakdown
 - Export of findings to structured JSON
 - Export of summaries to human-readable text files
-- Optional display of unused domains and keywords
+- Heatmap with density and entropy
 - Clean separation between:
   - Keyword loading
   - Binary scanning
