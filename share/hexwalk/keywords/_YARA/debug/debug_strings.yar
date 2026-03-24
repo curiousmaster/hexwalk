@@ -1,4 +1,4 @@
-rule dbg_strings : debug strings low_confidence
+rule dbg_strings : debug strings_indicator low_confidence
 {
     meta:
         category = "debug"
