@@ -3886,12 +3886,13 @@ class HexwalkTUI:
             if getattr(self, "_rescan_on_return", False):
                 self._rescan_on_return = False
 
-                def progress_cb(progress):
+                def progress_cb(progress, status=None):
                     draw_progress_modal(
                         self.stdscr,
                         title="HexWalk Scan",
                         message="Scanning with updated keywords...",
-                        progress=progress
+                        progress=progress,
+                        box_style = self.box
                     )
 
                 self.findings = search_rules(
