@@ -8,17 +8,11 @@ HexWalk combines a structured, filesystem-based keyword taxonomy with an interac
 
 ---
 
-<img height="128" alt="image" src="https://github.com/user-attachments/assets/da6dceaf-8bd5-4a4e-9dc7-aad7a44cf1f7" />
-<img height="128" alt="image" src="https://github.com/user-attachments/assets/287e8974-4e40-41c5-9f6a-752b9c40999e" />
-<img height="128" height="934" alt="image" src="https://github.com/user-attachments/assets/b4d24f3f-a7b4-4365-99e0-99d237226149" />
+<img width="80%" alt="Hits" src="images/hexwalk_hits.png" />
+<img height="128" alt="Hex" src="images/hexwalk_hex.png" />
+<img height="128" alt="Heatmap" src="images/hexwalk_heatmap.png" />
 
 ---
-<img height="128" alt="Hits" src="images/hexwalk_hits.png" />
-<img height="128" alt="Hex" src="images/hexwalk_hex.png" />
-<img height="128" height="934" alt="Heatmap" src="images/hexwalk_heatmap.png" />
-
-
-
 
 ## Key Features
 
