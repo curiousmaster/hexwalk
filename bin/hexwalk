@@ -1334,7 +1334,11 @@ class HexwalkTUI:
             mode_label = "+".join(active) if active else "NONE"
             contrast_label = "C" if entropy_contrast else "N"
 
-            title = f" Heatmap | {mode_label} | Scale:{scale_mode.upper()} | Entropy:{contrast_label} "
+            idx = cursor_y * grid_w + cursor_x
+            d = density[idx]
+            e = entropy_vals[idx]
+
+            title = f" Heatmap | {mode_label} | Scale:{scale_mode.upper()} | Entropy:{contrast_label} | D:{d:2d} E:{e:2.2f} "
             win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
 
             # ======================================================
@@ -1349,19 +1353,27 @@ class HexwalkTUI:
                     pass
 
             # ======================================================
-            # MINIMAP (NEW)
+            # MINIMAP
             # ======================================================
             minimap_y = 3
 
             mini_cells = grid_w
+
             bytes_per_mini = max(1, file_size // mini_cells)
+
+            mini_density = [0] * mini_cells
+            for hit in hits:
+                off = hit["context"]["offset"]
+                idx = min(mini_cells - 1, off // bytes_per_mini)
+                mini_density[idx] += 1
+
 
             for gx in range(mini_cells):
                 start = gx * bytes_per_mini
                 end = min(file_size, start + bytes_per_mini)
 
                 # density
-                d = 0
+                d = mini_density[gx]
                 for hit in hits:
                     off = hit["context"]["offset"]
                     if start <= off < end:
@@ -1512,6 +1524,24 @@ class HexwalkTUI:
 
             elif key == curses.KEY_DOWN:
                 cursor_y = min(grid_h - 1, cursor_y + 1)
+
+            elif key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+                except curses.error:
+                    continue
+
+                # minimap click
+                if my == y + minimap_y:
+                    gx = mx - (x + 3)
+
+                    if 0 <= gx < grid_w:
+                        offset = gx * bytes_per_mini
+
+                        # move cursor to corresponding grid cell
+                        idx = offset // bytes_per_cell
+                        cursor_y = idx // grid_w
+                        cursor_x = idx % grid_w
 
 
     def draw_empty_layout(self):
@@ -1671,7 +1701,7 @@ class HexwalkTUI:
 
         win = curses.newwin(mh, mw, y, x)
         win.keypad(True)
-        curses.curs_set(1)
+        curses.curs_set(0)
 
         # ---- Editor state ----
         mode = "name"  # or "text"
