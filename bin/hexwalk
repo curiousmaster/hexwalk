@@ -1007,8 +1007,6 @@ class HexwalkTUI:
         self.keywords_modified = False
         self._rescan_on_return = False
 
-
-
         ollama_cfg = self.config.get("ollama", {})
 
         if ollama_cfg.get("enabled"):
@@ -1050,24 +1048,6 @@ class HexwalkTUI:
             "subcategory": 1,
             "keyword": 1,
         }
-
-        # ---------- Heatmap gradient (low → high) ----------
-        self.heatmap_colors = [
-            18, 231, 230, 229, 228, 227, 226,
-            201, 200, 199, 198, 197, 196
-        ]
-
-        # Create color pairs dynamically
-        self.heatmap_pairs = []
-
-        base_pair_id = 50  # avoid collision with existing pairs
-
-        for i, color in enumerate(self.heatmap_colors):
-            pair_id = base_pair_id + i
-            curses.init_pair(pair_id, 0, color)  # foreground=black, background=color
-            self.heatmap_pairs.append(curses.color_pair(pair_id))
-
-        self.heatmap_empty_color = self.heatmap_pairs[0]
 
         # ---------- Init curses ----------
         self.init_curses()
@@ -1179,12 +1159,18 @@ class HexwalkTUI:
 
     def show_heatmap(self):
         import curses
+        import math
+
+        show_density = True
+        show_entropy = True
+        scale_mode = "log"
+        entropy_contrast = False
 
         h, w = self.stdscr.getmaxyx()
 
         # ---------- Modal geometry ----------
-        mh = min(40, h - 4)
-        mw = min(120, w - 4)
+        mh = min(200, h)
+        mw = min(200, w)
         y = (h - mh) // 2
         x = (w - mw) // 2
 
@@ -1192,25 +1178,27 @@ class HexwalkTUI:
         win.keypad(True)
 
         # ---------- Grid ----------
-        grid_h = mh - 8
+        grid_h = mh - 11
         grid_w = mw - 6
 
         file_size = len(self.binary)
 
-        # ---------- Hits (scope-aware) ----------
+        # ---------- Hits ----------
         hits = self.filtered_hits()
         if not hits:
             hits = []
             for v in self.findings.values():
                 hits.extend(v)
 
-        # ---------- Density ----------
         total_cells = grid_h * grid_w
         if total_cells <= 0:
             return
 
         bytes_per_cell = max(1, file_size // total_cells)
 
+        # ==========================================================
+        # DENSITY MAP
+        # ==========================================================
         density = [0] * total_cells
 
         for hit in hits:
@@ -1226,136 +1214,293 @@ class HexwalkTUI:
 
         max_density = max(density) if density else 1
 
-        # ---------- Cursor ----------
-        cursor_x = 0
-        cursor_y = 0
+        # ==========================================================
+        # ENTROPY MAP
+        # ==========================================================
+        def shannon_entropy(data):
+            if not data:
+                return 0.0
 
-        # ---------- Helpers ----------
+            freq = [0] * 256
+            for b in data:
+                freq[b] += 1
+
+            ent = 0.0
+            length = len(data)
+
+            for count in freq:
+                if count == 0:
+                    continue
+                p = count / length
+                ent -= p * math.log2(p)
+
+            return ent
+
+        entropy_vals = []
+        for i in range(total_cells):
+            start = i * bytes_per_cell
+            end = min(file_size, start + bytes_per_cell)
+            entropy_vals.append(shannon_entropy(self.binary[start:end]))
+
+        min_e = min(entropy_vals) if entropy_vals else 0.0
+        max_e = max(entropy_vals) if entropy_vals else 8.0
+
+        if abs(max_e - min_e) < 1e-6:
+            min_e = 0.0
+            max_e = 8.0
+
+
+        # ==========================================================
+        # HELPERS
+        # ==========================================================
+        def entropy_to_color(e):
+            if not entropy_contrast:
+                ratio = min(1.0, e / 8.0)
+            else:
+                ratio = (e - min_e) / (max_e - min_e)
+                ratio = max(0.0, min(1.0, ratio))
+                ratio = ratio ** 1.5
+
+            # --- clamp ---
+            ratio = max(0.0, min(1.0, ratio))
+
+            idx = int(ratio * (len(self.entropy_pairs) - 1))
+            idx = max(0, min(len(self.entropy_pairs) - 1, idx))
+
+            return self.entropy_pairs[idx]
+
         def density_to_color(val):
             if max_density == 0:
                 return curses.color_pair(0)
 
-            ratio = val / max_density
-            idx = int(ratio * (len(self.heatmap_pairs) - 1))
-            idx = max(0, min(len(self.heatmap_pairs) - 1, idx))
-            return self.heatmap_pairs[idx]
+            if scale_mode == "linear":
+                ratio = val / max_density
+
+            elif scale_mode == "log":
+                ratio = math.log1p(val) / math.log1p(max_density)
+
+            elif scale_mode == "sqrt":
+                ratio = math.sqrt(val) / math.sqrt(max_density)
+
+            else:
+                ratio = val / max_density
+
+            # --- clamp ratio ---
+            ratio = max(0.0, min(1.0, ratio))
+
+            idx = int(ratio * (len(self.density_pairs) - 1))
+
+            # --- clamp index (critical) ---
+            idx = max(0, min(len(self.density_pairs) - 1, idx))
+
+            return self.density_pairs[idx]
+
+
+        def render_cell(d, e):
+            if show_density and show_entropy:
+                return density_to_color(d) if d > 0 else entropy_to_color(e)
+            elif show_density:
+                return density_to_color(d)
+            elif show_entropy:
+                return entropy_to_color(e)
+            else:
+                return curses.color_pair(0)
 
         def cell_to_offset(cx, cy):
             idx = cy * grid_w + cx
             return min(file_size - 1, idx * bytes_per_cell)
 
-        def get_closest_hit(offset):
-            if not hits:
-                return None, None
+        # ==========================================================
+        # CURSOR
+        # ==========================================================
+        cursor_x = 0
+        cursor_y = 0
 
-            idx = min(
-                range(len(hits)),
-                key=lambda i: abs(hits[i]["context"]["offset"] - offset)
-            )
-
-            hit = hits[idx]
-            distance = abs(hit["context"]["offset"] - offset)
-            return hit, distance
-
-        # ---------- Scope label ----------
-        sel = self.current_category_selection()
-
-        if sel:
-            if sel["mode"] == "keyword":
-                scope = f"Keyword: {sel['keyword']}"
-            elif sel["mode"] == "subcategory":
-                scope = f"Subcategory: {sel['category']}"
-            elif sel["mode"] == "domain":
-                scope = f"Domain: {sel['domain']}"
-            else:
-                scope = "All"
-        else:
-            scope = "All"
-
-        # ---------- Loop ----------
+        # ==========================================================
+        # LOOP
+        # ==========================================================
         while True:
             win.erase()
             win.box()
             draw_box(win, mh, mw, self.box)
 
-            # Title
-            win.addstr(1, 2, f" Heatmap [{scope}] ", curses.A_BOLD)
+            # ---------- Title ----------
+            active = []
+            if show_density:
+                active.append("DENSITY")
+            if show_entropy:
+                active.append("ENTROPY")
 
-            # Offset + closest hit
-            current_offset = cell_to_offset(cursor_x, cursor_y)
-            closest_hit, distance = get_closest_hit(current_offset)
+            mode_label = "+".join(active) if active else "NONE"
+            contrast_label = "C" if entropy_contrast else "N"
 
-            line = f"Offset: 0x{current_offset:08X}"
+            title = f" Heatmap | {mode_label} | Scale:{scale_mode.upper()} | Entropy:{contrast_label} "
+            win.addstr(1, 2, title[:mw - 4], curses.A_BOLD)
 
-            if closest_hit:
-                hit_offset = closest_hit["context"]["offset"]
-                key = closest_hit.get("match_key", "")
+            # ======================================================
+            # DIVIDER
+            # ======================================================
+            divider_y = 2
 
-                if len(key) > 30:
-                    key = key[:27] + "..."
+            for gx in range(grid_w):
+                try:
+                    win.addstr(divider_y, 3 + gx, "─", curses.A_DIM)
+                except curses.error:
+                    pass
 
-                line += f" | Closest: 0x{hit_offset:08X} (Δ=0x{distance:X}) [{key}]"
+            # ======================================================
+            # MINIMAP (NEW)
+            # ======================================================
+            minimap_y = 3
 
-            win.addnstr(2, 2, line, mw - 4)
+            mini_cells = grid_w
+            bytes_per_mini = max(1, file_size // mini_cells)
 
-            # ---------- Draw heatmap ----------
+            for gx in range(mini_cells):
+                start = gx * bytes_per_mini
+                end = min(file_size, start + bytes_per_mini)
+
+                # density
+                d = 0
+                for hit in hits:
+                    off = hit["context"]["offset"]
+                    if start <= off < end:
+                        d += 1
+
+                # entropy
+                e = shannon_entropy(self.binary[start:end])
+
+                attr = render_cell(d, e)
+
+                # cursor projection
+                cur_offset = cell_to_offset(cursor_x, cursor_y)
+                if start <= cur_offset < end:
+                    char = "█"
+                    attr = self.cursor_pair | curses.A_BOLD
+                else:
+                    char = " "
+
+                try:
+                    win.addstr(minimap_y, 3 + gx, char, attr)
+                except curses.error:
+                    pass
+
+            # ======================================================
+            # DIVIDER
+            # ======================================================
+            divider_y = 4
+
+            for gx in range(grid_w):
+                try:
+                    win.addstr(divider_y, 3 + gx, "─", curses.A_DIM)
+                except curses.error:
+                    pass
+            # ======================================================
+            # DRAW GRID
+            # ======================================================
+            grid_y = 5
             for gy in range(grid_h):
                 for gx in range(grid_w):
                     idx = gy * grid_w + gx
-                    val = density[idx]
+                    d = density[idx]
+                    e = entropy_vals[idx]
 
-                    color = density_to_color(val)
+                    attr = render_cell(d, e)
+                    char = " "
 
                     if gx == cursor_x and gy == cursor_y:
-                        attr = color | curses.A_BOLD
                         char = "█"
-                    else:
-                        attr = color
-                        char = " "
+                        attr = self.cursor_pair | curses.A_BOLD
 
                     try:
-                        win.addstr(3 + gy, 3 + gx, char, attr)
+                        win.addstr(grid_y + gy, 3 + gx, char, attr)
                     except curses.error:
                         pass
-
-            # ---------- Legend ----------
-            legend_y = mh - 4
-            usable_colors = self.heatmap_pairs[1:]  # skip lowest (231)
-
-            num_colors = len(usable_colors)
+ 
+            # ======================================================
+            # DIVIDER
+            # ======================================================
+            divider_y = grid_y + grid_h
 
             for gx in range(grid_w):
-                # map position → color index
-                ratio = gx / (grid_w - 1) if grid_w > 1 else 0
-                idx = int(ratio * (num_colors - 1))
-                idx = max(0, min(num_colors - 1, idx))
+                try:
+                    win.addstr(divider_y, 3 + gx, "─", curses.A_DIM)
+                except curses.error:
+                    pass
 
-                color = usable_colors[idx]
+            # ==========================================================
+            # LEGEND
+            # ==========================================================
+            legend_y = 6 + grid_h
+
+            half_w = grid_w // 2
+            remaining_w = grid_w - half_w
+
+            # ---------- Density (LEFT half) ----------
+            for gx in range(half_w):
+                ratio = gx / (half_w - 1) if half_w > 1 else 0
+                idx = int(ratio * (len(self.density_pairs) - 1))
+                idx = max(0, min(len(self.density_pairs) - 1, idx))
+
+                color = self.density_pairs[idx]
 
                 try:
                     win.addstr(legend_y, 3 + gx, " ", color)
                 except curses.error:
                     pass
+            win.addstr(legend_y + 1, 3, "Density", curses.A_BOLD)
 
-            # ---------- Status ----------
-            status = "Arrows move | Mouse click jump | Enter jump | q close"
-            win.addnstr(
-                mh - 2,
-                2,
-                status,
-                mw - 4,
-                curses.color_pair(COLOR_STATUS) | curses.A_BOLD
-            )
+            # ---------- Entropy (RIGHT half) ----------
+            for gx in range(remaining_w):
+                ratio = gx / (remaining_w - 1) if remaining_w > 1 else 0
+                idx = int(ratio * (len(self.entropy_pairs) - 1))
+                idx = max(0, min(len(self.entropy_pairs) - 1, idx))
+
+                color = self.entropy_pairs[idx]
+
+                try:
+                    win.addstr(legend_y, 3 + half_w + gx, " ", color)
+                except curses.error:
+                    pass
+            win.addstr(legend_y + 1, 3 + half_w, "Entropy", curses.A_BOLD)
+
+            # ======================================================
+            # DIVIDER
+            # ======================================================
+            divider_y = legend_y + 2
+
+            for gx in range(grid_w):
+                try:
+                    win.addstr(divider_y, 3 + gx, "─", curses.A_DIM)
+                except curses.error:
+                    pass
+            # ======================================================
+            # STATUS
+            # ======================================================
+            status = " [d] density  [D] scale | [e] entropy  [E] contrast | arrows move | enter jump | q "
+            status = status.ljust(grid_w)[:grid_w]
+            win.addnstr(mh - 2, 3, status, mw - 4,
+                        curses.color_pair(COLOR_STATUS) | curses.A_BOLD)
 
             win.refresh()
 
             key = win.getch()
 
-            # ---------- Exit ----------
             if key in (ord("q"), 27):
                 break
 
-            # ---------- Keyboard navigation ----------
+            elif key == ord("d"):
+                show_density = not show_density
+
+            elif key == ord("D"):
+                scale_mode = {"linear": "log", "log": "sqrt", "sqrt": "linear"}[scale_mode]
+
+            elif key == ord("e"):
+                show_entropy = not show_entropy
+
+            elif key == ord("E"):
+                entropy_contrast = not entropy_contrast
+
             elif key == curses.KEY_LEFT:
                 cursor_x = max(0, cursor_x - 1)
 
@@ -1367,66 +1512,6 @@ class HexwalkTUI:
 
             elif key == curses.KEY_DOWN:
                 cursor_y = min(grid_h - 1, cursor_y + 1)
-
-            # ---------- Enter jump ----------
-            elif key in (10, 13):
-                target_offset = cell_to_offset(cursor_x, cursor_y)
-
-                if not hits:
-                    fake_hit = {
-                        "context": {"offset": target_offset},
-                        "match_length": 1,
-                        "match_type": "raw",
-                        "match_key": "<cursor>",
-                    }
-                    return self.show_hit_modal([fake_hit], 0)
-
-                closest_idx = min(
-                    range(len(hits)),
-                    key=lambda i: abs(
-                        hits[i]["context"]["offset"] - target_offset
-                    )
-                )
-
-                return self.show_hit_modal(hits, closest_idx)
-
-            # ---------- Mouse support ----------
-            elif key == curses.KEY_MOUSE:
-                try:
-                    _, mx, my, _, bstate = curses.getmouse()
-                except curses.error:
-                    continue
-
-                grid_origin_y = 3
-                grid_origin_x = 3
-
-                gx = mx - (x + grid_origin_x)
-                gy = my - (y + grid_origin_y)
-
-                if 0 <= gx < grid_w and 0 <= gy < grid_h:
-                    cursor_x = gx
-                    cursor_y = gy
-
-                    if bstate & curses.BUTTON1_CLICKED:
-                        target_offset = cell_to_offset(cursor_x, cursor_y)
-
-                        if not hits:
-                            fake_hit = {
-                                "context": {"offset": target_offset},
-                                "match_length": 1,
-                                "match_type": "raw",
-                                "match_key": "<cursor>",
-                            }
-                            return self.show_hit_modal([fake_hit], 0)
-
-                        closest_idx = min(
-                            range(len(hits)),
-                            key=lambda i: abs(
-                                hits[i]["context"]["offset"] - target_offset
-                            )
-                        )
-
-                        return self.show_hit_modal(hits, closest_idx)
 
 
     def draw_empty_layout(self):
@@ -1530,6 +1615,42 @@ class HexwalkTUI:
 
         curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
         curses.mouseinterval(0)
+
+        # ---------- Heatmap cursor color ----------
+        CURSOR_PAIR_ID = 200
+        curses.init_pair(CURSOR_PAIR_ID, curses.COLOR_BLACK, curses.COLOR_BLACK)
+        self.cursor_pair = curses.color_pair(CURSOR_PAIR_ID)
+
+        # ---------- Entropy palette (blue → green) ----------
+        self.entropy_colors = [
+            17, 18, 19, 20, 21,   # dark blue → blue
+            27, 33, 39,           # cyan-ish
+            45, 51                # green
+        ]
+
+        # ---------- Density palette (yellow → red) ----------
+        self.density_colors = [
+#            226, 220, 214,        # yellow → orange
+#            208, 202, 196         # orange → red
+
+            196, 202, 208, 214, 220, 226
+        ]
+
+        # Build pairs
+        self.entropy_pairs = []
+        self.density_pairs = []
+
+        base_entropy = 60
+        base_density = 80
+
+        for i, c in enumerate(self.entropy_colors):
+            curses.init_pair(base_entropy + i, 0, c)
+            self.entropy_pairs.append(curses.color_pair(base_entropy + i))
+
+        for i, c in enumerate(self.density_colors):
+            curses.init_pair(base_density + i, 0, c)
+            self.density_pairs.append(curses.color_pair(base_density + i))
+
 
     # ---------------- HELPERS -----------------
 
@@ -3467,7 +3588,7 @@ class HexwalkTUI:
 
         # ---------- Status bar ----------
         status = (
-            "Tab pane | Enter open | / filter | "
+            " Tab pane | Enter open | / filter | "
             "K Keyword | d details | [ ] resize | "
             "H Heatmap | "
             "e export | h help | q quit"
