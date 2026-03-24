@@ -168,6 +168,7 @@ A full-screen **Summary View** is also available.
 - `/` — filter keywords across the entire taxonomy
 - `s` — show summary
 - `e` — export results
+- `h` — show heatmap
 - `q` — quit
 
 When a filter is active, it is displayed in the top header and all counts reflect the filtered view.
