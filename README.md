@@ -7,12 +7,12 @@ It is designed for security engineers, reverse engineers, incident responders, a
 HexWalk combines a structured, filesystem-based keyword taxonomy with an interactive curses-based user interface, allowing analysts to explore findings hierarchically (domain → subcategory → keyword), filter results dynamically, and export structured reports.
 
 ---
-
-<img width="80%" alt="Hits" src="images/hexwalk_hits.png" />
-<img height="128" alt="Hex" src="images/hexwalk_hex.png" />
-<img height="128" alt="Heatmap" src="images/hexwalk_heatmap.png" />
-
----
+## Images
+<p float="middle">
+<img height="400" alt="Hits" src="images/hexwalk_hits.png" /><br>
+<img height="140" alt="Hex" src="images/hexwalk_hex.png" />
+<img height="140" alt="Heatmap" src="images/hexwalk_heatmap.png" />
+</p>
 
 ## Key Features
 
