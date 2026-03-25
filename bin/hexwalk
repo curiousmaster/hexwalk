@@ -459,7 +459,16 @@ def get_box_chars():
             "br": "+",
         }
 
-def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=None, density=None):
+def draw_progress_modal(
+    stdscr,
+    box_style,
+    title,
+    message,
+    progress=None,
+    win=None,
+    density=None,
+    density_pairs=None
+):
     h, w = stdscr.getmaxyx()
 
     modal_h = 11
@@ -476,9 +485,9 @@ def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=No
     win.addstr(1, 2, title[: modal_w - 4], curses.A_BOLD)
     win.addstr(3, 2, message[: modal_w - 4])
 
-    # -------------------------------
+    # -------------------------------------------------
     # Progress bar
-    # -------------------------------
+    # -------------------------------------------------
     if progress is not None:
         bar_w = modal_w - 4
         filled = int(bar_w * max(0.0, min(1.0, progress)))
@@ -489,36 +498,30 @@ def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=No
         pct = f"{int(progress * 100):3d}%"
         win.addstr(6, modal_w - len(pct) - 2, pct)
 
-    # -------------------------------
-    # Heatmap (NEW)
-    # -------------------------------
-    if density:
+    # -------------------------------------------------
+    # Density heatmap (COLOR-BASED)
+    # -------------------------------------------------
+    if density and density_pairs:
         heat_y = 7
         heat_w = modal_w - 4
 
-        max_val = max(density) if density else 1
+        max_val = max(density) or 1
 
         for i in range(min(heat_w, len(density))):
             val = density[i]
 
-            if max_val == 0:
-                char = " "
-            else:
-                ratio = val / max_val
+            # Normalize (same logic as big heatmap)
+            ratio = val / max_val
+            ratio = max(0.0, min(1.0, ratio))
 
-                if ratio > 0.75:
-                    char = "█"
-                elif ratio > 0.5:
-                    char = "▓"
-                elif ratio > 0.25:
-                    char = "▒"
-                elif ratio > 0:
-                    char = "░"
-                else:
-                    char = " "
+            idx = int(ratio * (len(density_pairs) - 1))
+            idx = max(0, min(len(density_pairs) - 1, idx))
+
+            color = density_pairs[idx]
 
             try:
-                win.addch(heat_y, 2 + i, char)
+                # space with background color = clean heat bar
+                win.addstr(heat_y, 2 + i, " ", color)
             except curses.error:
                 pass
 
@@ -615,6 +618,7 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None, density=None):
     """
 
     findings = defaultdict(list)
+    progress_steps = 1 
 
     file_size = len(binary)
 
@@ -683,7 +687,8 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None, density=None):
             search_from = end
 
         current_step += 1
-        update_progress(f"{current_step}/{total_steps} | Plain: {domain}/{subcat}")
+        if not current_step % progress_steps:
+            update_progress(f"{current_step}/{total_steps} | Plain: {domain}/{subcat}")
 
     # ==========================================================
     # REGEX RULES
@@ -722,7 +727,8 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None, density=None):
             continue
 
         current_step += 1
-        update_progress(f"{current_step}/{total_steps} | Regex: {domain}/{subcat}")
+        if not current_step % progress_steps:
+            update_progress(f"{current_step}/{total_steps} | Regex: {domain}/{subcat}")
 
     # ==========================================================
     # YARA RULES
@@ -768,7 +774,8 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None, density=None):
                     })
 
         current_step += 1
-        update_progress(f"{current_step}/{total_steps} | YARA: {domain}/{subcat}")
+        if not current_step % progress_steps:
+            update_progress(f"{current_step}/{total_steps} | YARA: {domain}/{subcat}")
 
     return findings
 
@@ -1140,7 +1147,8 @@ class HexwalkTUI:
                 status,
                 progress,
                 win=progress_win,
-                density=self.search_density
+                density=self.search_density,
+                density_pairs=self.density_pairs
             )
 
         self.findings = search_rules(
@@ -1677,47 +1685,77 @@ class HexwalkTUI:
 
         self.stdscr.refresh()
 
-    def show_progress_modal(self, title, message, progress=None):
-        stdscr = self.stdscr
+    def draw_progress_modal(
+        stdscr,
+        box_style,
+        title,
+        message,
+        progress=None,
+        win=None,
+        density=None,
+        density_pairs=None
+    ):
         h, w = stdscr.getmaxyx()
 
-        modal_h = 9
+        modal_h = 11
         modal_w = min(60, w - 4)
         modal_y = (h - modal_h) // 2
         modal_x = (w - modal_w) // 2
 
-        # Create an independent window (IMPORTANT)
-        win = curses.newwin(modal_h, modal_w, modal_y, modal_x)
-        win.clear()
-        draw_box(win, modal_h, modal_w, self.box)
+        if win is None:
+            win = stdscr.subwin(modal_h, modal_w, modal_y, modal_x)
 
-        # Title
-        win.addstr(
-            1, 2,
-            title[: modal_w - 4],
-            curses.A_BOLD
-        )
+        win.erase()
+        draw_box(win, modal_h, modal_w, box_style)
 
-        # Message
-        win.addstr(
-            3, 2,
-            message[: modal_w - 4]
-        )
+        win.addstr(1, 2, title[: modal_w - 4], curses.A_BOLD)
+        win.addstr(3, 2, message[: modal_w - 4])
 
+        # -------------------------------------------------
         # Progress bar
+        # -------------------------------------------------
         if progress is not None:
             bar_w = modal_w - 4
             filled = int(bar_w * max(0.0, min(1.0, progress)))
             bar = "█" * filled + " " * (bar_w - filled)
 
-            win.addstr(5, 2, bar, curses.A_REVERSE)
+            win.addnstr(5, 2, bar, bar_w, curses.A_REVERSE)
 
             pct = f"{int(progress * 100):3d}%"
             win.addstr(6, modal_w - len(pct) - 2, pct)
 
-        # IMPORTANT: do NOT call refresh() here
+        # -------------------------------------------------
+        # Density heatmap (COLOR-BASED)
+        # -------------------------------------------------
+        if density and density_pairs:
+            heat_y = 7
+            heat_w = modal_w - 4
+
+            max_val = max(density) or 1
+
+            for i in range(min(heat_w, len(density))):
+                val = density[i]
+
+                # Normalize (same logic as big heatmap)
+                ratio = val / max_val
+                ratio = max(0.0, min(1.0, ratio))
+
+                idx = int(ratio * (len(density_pairs) - 1))
+                idx = max(0, min(len(density_pairs) - 1, idx))
+
+                color = density_pairs[idx]
+
+                try:
+                    # space with background color = clean heat bar
+                    win.addstr(heat_y, 2 + i, " ", color)
+                except curses.error:
+                    pass
+
         win.noutrefresh()
         curses.doupdate()
+
+        return win
+
 
     def init_curses(self):
         curses.curs_set(0)
