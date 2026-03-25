@@ -91,6 +91,7 @@ DEBUG_CFG = None
 
 KEYWORD_DIR = "/usr/local/share/hexwalk/keywords"
 CONFIG_PATH = os.path.expanduser("~/.hexwalkrc")
+CONFIG = []
 
 COLOR_CAT = 1
 COLOR_HIT = 2
@@ -1001,17 +1002,15 @@ def od_bc_view(data, offset, keyword, context=64):
 
 # ---------------- TUI -----------------
 class HexwalkTUI:
-    def __init__(self, stdscr, binary, filename, file_path, keywords, show_all=False):
+    def __init__(self, stdscr, binary, filename, file_path, keywords ):
 
-        self.config = load_config()
-        debug_init(self.config)
+        debug_init(CONFIG)
 
         # ---------- Core state ----------
         self.stdscr = stdscr
         self.binary = binary
         self.filename = filename
         self.file_path = file_path
-        self.show_all = show_all
 
         self.rules = load_rules(KEYWORD_DIR)
 
@@ -1026,7 +1025,7 @@ class HexwalkTUI:
         self.keywords_modified = False
         self._rescan_on_return = False
 
-        ollama_cfg = self.config.get("ollama", {})
+        ollama_cfg = CONFIG.get("ollama", {})
 
         if ollama_cfg.get("enabled"):
             ok, models, err = probe_ollama(
@@ -1726,7 +1725,7 @@ class HexwalkTUI:
 
     def edit_prompt_modal(self, prompt_id):
 
-        prompts = self.config.setdefault("prompts", {})
+        prompts = CONFIG.setdefault("prompts", {})
 
         if prompt_id not in prompts:
             return
@@ -1876,15 +1875,15 @@ class HexwalkTUI:
 
     def show_prompt_manager_modal(self):
 
-        prompts = self.config.setdefault("prompts", {})
-        active = self.config.get("active_prompt")
+        prompts = CONFIG.setdefault("prompts", {})
+        active = CONFIG.get("active_prompt")
 
         if not prompts:
             prompts["default"] = {
                 "name": "Default",
                 "text": "Analyze the following findings."
             }
-            self.config["active_prompt"] = "default"
+            CONFIG["active_prompt"] = "default"
             active = "default"
 
         keys = list(prompts.keys())
@@ -1926,8 +1925,8 @@ class HexwalkTUI:
                 keys = list(prompts.keys())
 
             elif ch == ord(" "):  # Set active
-                self.config["active_prompt"] = keys[sel]
-                self.config["ollama"]["active_prompt"] = keys[sel]
+                CONFIG["active_prompt"] = keys[sel]
+                CONFIG["ollama"]["active_prompt"] = keys[sel]
                 active = keys[sel]
 
             elif ch == ord("a"):
@@ -1941,7 +1940,7 @@ class HexwalkTUI:
                     del prompts[key]
                     if active == key:
                         active = keys[0]
-                        self.config["active_prompt"] = active
+                        CONFIG["active_prompt"] = active
                     keys = list(prompts.keys())
                     sel = max(0, sel - 1)
 
@@ -1950,7 +1949,7 @@ class HexwalkTUI:
 
     def show_model_select_modal(self):
 
-        url = self.config["ollama"]["url"].rstrip("/") + "/api/tags"
+        url = CONFIG["ollama"]["url"].rstrip("/") + "/api/tags"
 
         try:
             with urllib.request.urlopen(url, timeout=5) as r:
@@ -2117,7 +2116,7 @@ class HexwalkTUI:
     def show_config_modal(self):
 
         # ---- Ensure config structure ----
-        cfg = self.config.setdefault("ollama", {})
+        cfg = CONFIG.setdefault("ollama", {})
         cfg.setdefault("enabled", False)
         cfg.setdefault("url", "http://localhost:11434")
         cfg.setdefault("model", "")
@@ -2166,8 +2165,8 @@ class HexwalkTUI:
                 elif key == "timeout":
                     val = f"{cfg['timeout']}s"
                 elif key == "prompt":
-                    pid = self.config.get("active_prompt")
-                    prompt = self.config.get("prompts", {}).get(pid, {})
+                    pid = CONFIG.get("active_prompt")
+                    prompt = CONFIG.get("prompts", {}).get(pid, {})
                     val = prompt.get("name", "<none>")
 
 
@@ -2217,7 +2216,7 @@ class HexwalkTUI:
 
             # ---- Save ----
             elif key == ord("s"):
-                save_config(self.config)
+                save_config(CONFIG)
                 break
 
             # ---- Cancel ----
@@ -2344,7 +2343,7 @@ class HexwalkTUI:
         import time
         import binascii
 
-        cfg = self.config.get("ollama", {})
+        cfg = CONFIG.get("ollama", {})
         url = cfg.get("url")
         model = cfg.get("model")
         timeout = cfg.get("timeout", 30)
@@ -2355,8 +2354,8 @@ class HexwalkTUI:
         # --------------------------------------------------
         # Build prompt from configured prompt + real JSON schema
         # --------------------------------------------------
-        prompts = self.config.get("prompts", {})
-        active_id = self.config.get("active_prompt")
+        prompts = CONFIG.get("prompts", {})
+        active_id = CONFIG.get("active_prompt")
         prompt_obj = prompts.get(active_id)
 
         if not prompt_obj:
@@ -2654,29 +2653,45 @@ class HexwalkTUI:
                 return i
         return None
 
+
     def build_domain_tree(self):
         """
-        Build tree structure from self.findings only.
+        Build tree structure from rules + findings.
 
         Tree levels:
         domain
             └─ subcategory
                 └─ keyword
 
-        Each node includes:
-        - hit counts
-        - expansion state
-        - match_type (plain / regex / yara / multi)
+        Supports:
+        - show_all (include zero-hit keywords)
         """
 
         tree = []
         tree_filter = self.tree_filter.lower() if self.tree_filter else None
+        show_all = CONFIG.get("global", {}).get("show_all", False)
 
         # -------------------------------------------------
-        # Group findings: domain -> subcategory -> keyword
+        # Group structure: domain -> subcategory -> keyword
         # -------------------------------------------------
         grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
+        # -------------------------------------------------
+        # 1. Initialize ALL keywords from rules
+        # -------------------------------------------------
+        for rule in self.rules.get("plain", []):
+            grouped[rule["domain"]][rule["subcategory"]][rule["value"]] = []
+
+        for rule in self.rules.get("regex", []):
+            grouped[rule["domain"]][rule["subcategory"]][rule["pattern"]] = []
+
+        for rule in self.rules.get("yara", []):
+            key = rule.get("rule_name") or Path(rule.get("source", "")).stem or "<yara>"
+            grouped[rule["domain"]][rule["subcategory"]][key] = []
+
+        # -------------------------------------------------
+        # 2. Inject findings into grouped structure
+        # -------------------------------------------------
         for category, hits in self.findings.items():
             if "/" not in category:
                 continue
@@ -2690,12 +2705,9 @@ class HexwalkTUI:
                 if isinstance(key, bytes):
                     key = key.decode(errors="ignore")
 
-                # Remove control chars (THIS is the real fix)
-                key = "".join(c for c in key if c.isprintable())
+                key = "".join(c for c in key if c.isprintable()).strip()
 
-                key = key.strip()
-
-                # Hard fallback if empty or invisible
+                # fallback
                 if not key:
                     raw = hit.get("context", {}).get("bytes_hex", "")
                     key = f"<hex:{raw[:8]}>" if raw else "<binary>"
@@ -2703,7 +2715,7 @@ class HexwalkTUI:
                 grouped[domain][subcat][key].append(hit)
 
         # -------------------------------------------------
-        # Build tree nodes
+        # 3. Build tree nodes
         # -------------------------------------------------
         for domain in sorted(grouped.keys()):
             domain_total = 0
@@ -2733,23 +2745,23 @@ class HexwalkTUI:
                 for key in sorted(grouped[domain][subcat].keys()):
                     hits = grouped[domain][subcat][key]
 
-                    # Apply filter (keyword-level)
+                    # Filter
                     if tree_filter and tree_filter not in key.lower():
                         continue
 
                     count = len(hits)
-                    if count == 0 and not self.show_all:
+
+                    if count == 0 and not show_all:
                         continue
 
                     # -------------------------------------------------
-                    # Extract match types
+                    # Match types
                     # -------------------------------------------------
-                    types = {h.get("match_type", "plain") for h in hits}
-
-                    if len(types) == 1:
-                        match_type = next(iter(types))
+                    if hits:
+                        types = {h.get("match_type", "plain") for h in hits}
+                        match_type = next(iter(types)) if len(types) == 1 else "multi"
                     else:
-                        match_type = "multi"
+                        match_type = "none"
 
                     sub_total += count
 
@@ -2763,14 +2775,14 @@ class HexwalkTUI:
                         "match_type": match_type,
                     })
 
-                if sub_total == 0 and not self.show_all:
+                if sub_total == 0 and not show_all:
                     continue
 
                 sub_node["count"] = sub_total
                 domain_total += sub_total
                 domain_node["children"].append(sub_node)
 
-            if domain_total == 0 and not self.show_all:
+            if domain_total == 0 and not show_all:
                 continue
 
             domain_node["count"] = domain_total
@@ -4167,6 +4179,9 @@ class HexwalkTUI:
 
 # ---------------- MAIN -----------------
 def main():
+    global CONFIG
+
+    CONFIG = load_config()
 
     parser = argparse.ArgumentParser(
         description="Hexwalk – binary keyword scanner"
@@ -4190,20 +4205,33 @@ def main():
     )
 
     parser.add_argument(
-        "--show-all",
-        action="store_true",
-        help="Show all domains, subcategories, and keywords even if no hits are found",
+        "-k", "--keyword",
+        help="Ad-hoc keyword(s), e.g. 'root|admin|regex:\\bfoo\\b'",
     )
 
     parser.add_argument(
-        "-k", "--keyword",
-        help="Ad-hoc keyword(s), e.g. 'root|admin|regex:\\bfoo\\b'",
+        "--show_all",
+        action="store_true",
+        help="Show all keywords",
+    )
+
+    parser.add_argument(
+        "-d", "--debug",
+        action="store_true",
+        help="Enable config mode",
     )
 
     args = parser.parse_args()
 
     file_path = args.file
     filename = os.path.basename(file_path)
+
+    if args.show_all:
+        CONFIG["global"]["show_all"] = True
+
+    if args.debug:
+        CONFIG["debug"]["enabled"] = True
+
 
     # ---------- Load binary ----------
     if is_hex_file(file_path):
@@ -4247,8 +4275,7 @@ def main():
             binary=binary,
             filename=filename,
             file_path=file_path,
-            keywords=keywords,
-            show_all=args.show_all
+            keywords=keywords
         )
     )
 
