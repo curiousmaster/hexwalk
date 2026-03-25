@@ -459,14 +459,10 @@ def get_box_chars():
             "br": "+",
         }
 
-def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=None):
-    """
-    Draw or update a centered modal progress window.
-    """
-
+def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=None, density=None):
     h, w = stdscr.getmaxyx()
 
-    modal_h = 9
+    modal_h = 11
     modal_w = min(60, w - 4)
     modal_y = (h - modal_h) // 2
     modal_x = (w - modal_w) // 2
@@ -480,14 +476,51 @@ def draw_progress_modal(stdscr, box_style, title, message, progress=None, win=No
     win.addstr(1, 2, title[: modal_w - 4], curses.A_BOLD)
     win.addstr(3, 2, message[: modal_w - 4])
 
+    # -------------------------------
+    # Progress bar
+    # -------------------------------
     if progress is not None:
         bar_w = modal_w - 4
         filled = int(bar_w * max(0.0, min(1.0, progress)))
         bar = "█" * filled + " " * (bar_w - filled)
+
         win.addnstr(5, 2, bar, bar_w, curses.A_REVERSE)
 
         pct = f"{int(progress * 100):3d}%"
         win.addstr(6, modal_w - len(pct) - 2, pct)
+
+    # -------------------------------
+    # Heatmap (NEW)
+    # -------------------------------
+    if density:
+        heat_y = 7
+        heat_w = modal_w - 4
+
+        max_val = max(density) if density else 1
+
+        for i in range(min(heat_w, len(density))):
+            val = density[i]
+
+            if max_val == 0:
+                char = " "
+            else:
+                ratio = val / max_val
+
+                if ratio > 0.75:
+                    char = "█"
+                elif ratio > 0.5:
+                    char = "▓"
+                elif ratio > 0.25:
+                    char = "▒"
+                elif ratio > 0:
+                    char = "░"
+                else:
+                    char = " "
+
+            try:
+                win.addch(heat_y, 2 + i, char)
+            except curses.error:
+                pass
 
     win.noutrefresh()
     curses.doupdate()
@@ -572,16 +605,18 @@ def hex_to_bin(file_path):
 
     return bytes(memory[:max_addr])
 
-# ---------------- PLAIN KEYWORD SCAN (AC) -----------------
-
-def search_rules(binary: bytes, rules: dict, progress_cb=None):
+# ---------------- SEARCH RULES -----------------
+def search_rules(binary: bytes, rules: dict, progress_cb=None, density=None):
     """
     Offset-safe scanning:
     - Works ONLY on raw bytes
     - Stores preview_bytes + relative offsets
+    - Optional density heatmap (lightweight, incremental)
     """
 
     findings = defaultdict(list)
+
+    file_size = len(binary)
 
     total_steps = (
         len(rules.get("plain", []))
@@ -598,32 +633,45 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
     CONTEXT = 40
 
     # ==========================================================
-    # PLAIN KEYWORDS (BYTE SAFE)
+    # HELPER: density update (safe + fast)
+    # ==========================================================
+    def update_density(offset):
+        if not density or file_size == 0:
+            return
+
+        idx = int((offset / file_size) * (len(density) - 1))
+        idx = max(0, min(len(density) - 1, idx))
+        density[idx] += 1
+
+    # ==========================================================
+    # PLAIN KEYWORDS
     # ==========================================================
     for rule in rules.get("plain", []):
-        key = rule["value"].encode(errors="ignore")
+        key_bytes = rule["value"].encode(errors="ignore")
         domain = rule["domain"]
         subcat = rule["subcategory"]
 
         search_from = 0
 
         while True:
-            idx = binary.find(key, search_from)
-            if idx == -1:
+            pos = binary.find(key_bytes, search_from)
+            if pos == -1:
                 break
 
-            start = idx
-            end = idx + len(key)
+            start = pos
+            end = pos + len(key_bytes)
+
+            update_density(start)
 
             ctx_start = max(0, start - CONTEXT)
-            ctx_end = min(len(binary), end + CONTEXT)
+            ctx_end = min(file_size, end + CONTEXT)
 
             preview = binary[ctx_start:ctx_end]
 
             findings[f"{domain}/{subcat}"].append({
                 "preview_bytes": preview,
                 "match_offset": start - ctx_start,
-                "match_length": len(key),
+                "match_length": len(key_bytes),
                 "match_type": "plain",
                 "match_key": rule["value"],
                 "context": {
@@ -638,7 +686,7 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
         update_progress(f"{current_step}/{total_steps} | Plain: {domain}/{subcat}")
 
     # ==========================================================
-    # REGEX RULES (BYTE SAFE)
+    # REGEX RULES
     # ==========================================================
     for rule in rules.get("regex", []):
         domain = rule["domain"]
@@ -647,13 +695,14 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
 
         try:
             for match in pattern.finditer(binary):
-
                 start = match.start()
                 end = match.end()
                 length = end - start
 
+                update_density(start)
+
                 ctx_start = max(0, start - CONTEXT)
-                ctx_end = min(len(binary), end + CONTEXT)
+                ctx_end = min(file_size, end + CONTEXT)
 
                 preview = binary[ctx_start:ctx_end]
 
@@ -676,52 +725,53 @@ def search_rules(binary: bytes, rules: dict, progress_cb=None):
         update_progress(f"{current_step}/{total_steps} | Regex: {domain}/{subcat}")
 
     # ==========================================================
-    # YARA RULES (ALREADY BYTE SAFE)
+    # YARA RULES
     # ==========================================================
-    if rules.get("yara"):
-        for rule in rules["yara"]:
+    for rule in rules.get("yara", []):
+        domain = rule["domain"]
+        subcat = rule["subcategory"]
+        compiled = rule["compiled"]
 
-            domain = rule["domain"]
-            subcat = rule["subcategory"]
-            compiled = rule["compiled"]
+        try:
+            matches = compiled.match(data=binary)
+        except Exception as e:
+            debug_log(f"YARA execution error: {e}", "yara")
+            continue
 
-            try:
-                matches = compiled.match(data=binary)
-            except Exception as e:
-                debug_log(f"YARA execution error: {e}", "yara")
-                continue
+        for m in matches:
+            key = f"{domain}/{subcat}/{m.rule}"
 
-            for m in matches:
-                key = f"{domain}/{subcat}/{m.rule}"
+            for s in m.strings or []:
+                for instance in s.instances:
 
-                for s in m.strings or []:
-                    for instance in s.instances:
+                    offset = instance.offset
+                    length = instance.matched_length
 
-                        offset = instance.offset
-                        length = instance.matched_length
+                    update_density(offset)
 
-                        ctx_start = max(0, offset - CONTEXT)
-                        ctx_end = min(len(binary), offset + length + CONTEXT)
+                    ctx_start = max(0, offset - CONTEXT)
+                    ctx_end = min(file_size, offset + length + CONTEXT)
 
-                        preview = binary[ctx_start:ctx_end]
+                    preview = binary[ctx_start:ctx_end]
 
-                        findings[key].append({
-                            "preview_bytes": preview,
-                            "match_offset": offset - ctx_start,
-                            "match_length": length,
-                            "match_type": "yara",
-                            "rule_name": m.rule,
-                            "match_key": m.rule,
-                            "context": {
-                                "offset": offset,
-                                "bytes_hex": binary[offset:offset+length].hex(),
-                            }
-                        })
+                    findings[key].append({
+                        "preview_bytes": preview,
+                        "match_offset": offset - ctx_start,
+                        "match_length": length,
+                        "match_type": "yara",
+                        "rule_name": m.rule,
+                        "match_key": m.rule,
+                        "context": {
+                            "offset": offset,
+                            "bytes_hex": binary[offset:offset+length].hex(),
+                        }
+                    })
 
         current_step += 1
-        update_progress(f"{current_step}/{total_steps} | YARA")
+        update_progress(f"{current_step}/{total_steps} | YARA: {domain}/{subcat}")
 
     return findings
+
 
 def generate_metadata(file_path, findings):
     total_hits = sum(len(hits) for hits in findings.values())
@@ -1047,6 +1097,7 @@ class HexwalkTUI:
         self.categories = []
         self.category_tree = []
         self.tree_filter = None
+        self.search_density = [0] * 60
 
         # ---------- UI state ----------
         self.cat_i = 0
@@ -1088,13 +1139,15 @@ class HexwalkTUI:
                 "HexWalk Scan",
                 status,
                 progress,
-                win=progress_win
+                win=progress_win,
+                density=self.search_density
             )
 
         self.findings = search_rules(
             self.binary,
             self.rules,
-            progress_cb=progress_cb
+            progress_cb=progress_cb,
+            density=self.search_density
         )
 
         # ---------- Clear modal ----------
@@ -3916,7 +3969,8 @@ class HexwalkTUI:
                 self.findings = search_rules(
                     self.binary,
                     self.rules,
-                    progress_cb=progress_cb
+                    progress_cb=progress_cb,
+                    density=self.search_density
                 )
 
                 # Clear modal after completion
