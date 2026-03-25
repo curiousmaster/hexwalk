@@ -68,6 +68,7 @@ import time
 import argparse
 import re
 import json
+import random
 import textwrap
 import urllib.request
 import urllib.error
@@ -123,9 +124,8 @@ TYPE_INDICATOR = {
     "multi": ( "[m]", 13 ),
 }
 
+
 # ---------------- HELPERS -----------------
-
-
 def handle_exception(exc_type, exc_value, exc_traceback):
     try:
         curses.endwin()
@@ -182,12 +182,16 @@ def debug_log(message, section=None):
 # --- CONFIG ---
 def default_config():
     return {
+        "global": {
+            "show_splash": True,
+            "show_all": False,
+        },
         "debug": {
             "enabled": False,
             "log_file": os.path.expanduser("~/hexwalk_debug.log"),
             "yara": True,
             "regex": True,
-            "search": True
+            "search": True,
         },
         "ollama": {
             "enabled": False,
@@ -1128,6 +1132,8 @@ class HexwalkTUI:
         # ---------- Init curses ----------
         self.init_curses()
 
+        self.show_splash_screen()
+
         # ---------- Draw empty base UI ----------
         self.draw_empty_layout()
 
@@ -1205,6 +1211,170 @@ class HexwalkTUI:
                         )
 
         self.count_widths = widths
+
+    def show_splash_screen(self):
+        import curses
+        import time
+        import math
+        import random
+
+        if not CONFIG["global"]["show_splash"]:
+            return
+
+        splash_sleep = 30
+
+        h, w = self.stdscr.getmaxyx()
+
+        art = [
+            [
+                "                                                            ",
+                " ██╗  ██╗███████╗██╗  ██╗██╗    ██╗ █████╗ ██╗     ██╗  ██╗ ",
+                " ██║  ██║██╔════╝╚██╗██╔╝██║    ██║██╔══██╗██║     ██║ ██╔╝ ",
+                " ███████║█████╗   ╚███╔╝ ██║ █╗ ██║███████║██║     █████╔╝  ",
+                " ██╔══██║██╔══╝   ██╔██╗ ██║███╗██║██╔══██║██║     ██╔═██╗  ",
+                " ██║  ██║███████╗██╔╝ ██╗╚███╔███╔╝██║  ██║███████╗██║  ██╗ ",
+                " ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ",
+                "                                                            ",
+                "          Scanning memory... Finding hidden paths           ",
+                "                                                            ",
+            ],
+            [
+                "                                                                        ",
+                " ░  ░░░░  ░░        ░░  ░░░░  ░░  ░░░░  ░░░      ░░░  ░░░░░░░░  ░░░░  ░ ",
+                " ▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒▒  ▒▒  ▒▒▒  ▒  ▒  ▒▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒  ▒▒ ",
+                " ▓        ▓▓      ▓▓▓▓▓▓    ▓▓▓▓        ▓▓  ▓▓▓▓  ▓▓  ▓▓▓▓▓▓▓▓     ▓▓▓▓ ",
+                " █  ████  ██  █████████  ██  ███   ██   ██        ██  ████████  ███  ██ ",
+                " █  ████  ██        ██  ████  ██  ████  ██  ████  ██        ██  ████  █ ",
+                "                                                                        ",
+                "                Scanning memory... Finding hidden paths                 ",
+                "                                                                        ",
+            ],
+            [
+                " ▄▄▄   ▄▄▄  ▄▄▄▄▄▄▄ ▄▄▄   ▄▄▄ ▄▄▄▄  ▄▄▄  ▄▄▄▄   ▄▄▄▄   ▄▄▄      ▄▄▄   ▄▄▄ ",
+                " ███   ███ ███▀▀▀▀▀ ████▄████ ▀███  ███  ███▀ ▄██▀▀██▄ ███      ███ ▄███▀ ",
+                " █████████ ███▄▄     ▀█████▀   ███  ███  ███  ███  ███ ███      ███████   ",
+                " ███▀▀▀███ ███      ▄███████▄  ███▄▄███▄▄███  ███▀▀███ ███      ███▀███▄  ",
+                " ███   ███ ▀███████ ███▀ ▀███   ▀████▀████▀   ███  ███ ████████ ███  ▀███ ",
+                "                                                                          ",
+                "                Scanning memory... Finding hidden paths                   ",
+                "                                                                          ",
+            ],
+            [
+                "                                                                                ",
+                "  _|    _|  _|_|_|_|  _|      _|  _|          _|    _|_|    _|        _|    _|  ",
+                "  _|    _|  _|          _|  _|    _|          _|  _|    _|  _|        _|  _|    ",
+                "  _|_|_|_|  _|_|_|        _|      _|    _|    _|  _|_|_|_|  _|        _|_|      ",
+                "  _|    _|  _|          _|  _|      _|  _|  _|    _|    _|  _|        _|  _|    ",
+                "  _|    _|  _|_|_|_|  _|      _|      _|  _|      _|    _|  _|_|_|_|  _|    _|  ",
+                "                                                                                ",
+                "                   Scanning memory... Finding hidden paths                      ",
+                "                                                                                ",
+            ],
+            [
+                "                                                                     ",
+                "   ___ __________________  _____      __  _____  .____     ____  __. ",
+                "  /   |   \\_   _____/\\   \\/  /  \\    /  \\/  _  \\ |    |   |    |/ _| ",
+                " /    ~    \\    __)_  \\     /\\   \\/\\/   /  /_\\  \\|    |   |      <   ",
+                " \\    Y    /        \\ /     \\ \\        /    |    \\    |___|    |  \\  ",
+                "  \\___|_  /_______  //___/\\  \\ \\__/\\  /\\____|__  /_______ \\____|__ \\ ",
+                "        \\/        \\/       \\_/      \\/         \\/        \\/       \\/ ",
+                "                                                                     ",
+                "               Scanning memory... Finding hidden paths               ",
+                "                                                                     ",
+            ]
+        ]
+
+        artix = random.randint(0, len(art) - 1)
+
+        modal_h = len(art[artix]) + 6
+        modal_w = max(len(line) for line in art[artix]) + 6
+
+        y = (h - modal_h) // 2
+        x = (w - modal_w) // 2
+
+        win = self.stdscr.subwin(modal_h, modal_w, y, x)
+
+        density_colors = self.density_pairs or [curses.A_BOLD]
+
+        # -------------------------------------------------
+        # Enable NON-BLOCKING input
+        # -------------------------------------------------
+        self.stdscr.nodelay(True)
+        curses.flushinp()
+
+        def heat_value(x, y, t):
+            return (
+                math.sin(x * 0.15 + t) +
+                math.cos(y * 0.25 - t * 0.7) +
+                math.sin((x + y) * 0.1 + t * 0.5)
+            )
+
+        start = time.time()
+
+        while True:
+            # -----------------------------
+            # EXIT on keypress
+            # -----------------------------
+            key = self.stdscr.getch()
+            if key != -1:
+                break
+
+            # -----------------------------
+            # EXIT on timeout
+            # -----------------------------
+            if time.time() - start > splash_sleep:
+                break
+
+            t = time.time() - start
+
+            win.erase()
+            draw_box(win, modal_h, modal_w, self.box)
+
+            for i, line in enumerate(art[artix]):
+                row = 2 + i
+                col = (modal_w - len(line)) // 2
+
+                for j, ch in enumerate(line):
+                    if ch == "¤":
+                        continue
+
+                    nx = j / max(1, len(line))
+                    ny = i / max(1, len(art[artix]))
+
+                    v = heat_value(nx * 10, ny * 10, t)
+                    v = (v + 3) / 6
+                    v = max(0.0, min(1.0, v))
+                    v = v ** 0.6
+
+                    idx = int(v * (len(density_colors) - 1))
+                    idx = max(0, min(len(density_colors) - 1, idx))
+
+                    attr = density_colors[idx] | curses.A_BOLD
+
+                    try:
+                        win.addch(row, col + j, ch, attr)
+                    except curses.error:
+                        pass
+
+            footer = "Press any key to continue..."
+            win.addstr(
+                modal_h - 2,
+                (modal_w - len(footer)) // 2,
+                footer,
+                curses.A_DIM
+            )
+
+            win.noutrefresh()
+            curses.doupdate()
+
+            time.sleep(0.02)
+
+        # -------------------------------------------------
+        # Restore blocking input (IMPORTANT)
+        # -------------------------------------------------
+        self.stdscr.nodelay(False)
+        curses.flushinp()
+
 
     def build_heatmap(self, hits, width):
         """
@@ -4308,6 +4478,12 @@ def main():
     )
 
     parser.add_argument(
+        "--hide_splash",
+        action="store_true",
+        help="Hide splash page",
+    )
+
+    parser.add_argument(
         "-d", "--debug",
         action="store_true",
         help="Enable config mode",
@@ -4317,6 +4493,9 @@ def main():
 
     file_path = args.file
     filename = os.path.basename(file_path)
+
+    if args.hide_splash:
+        CONFIG["global"]["show_splash"] = False
 
     if args.show_all:
         CONFIG["global"]["show_all"] = True
