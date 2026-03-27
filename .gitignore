@@ -1,4 +1,6 @@
 x
+pkg
+*.deb
 *.old
 *.bak
 *.tgz
