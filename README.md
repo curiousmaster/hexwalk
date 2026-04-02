@@ -7,7 +7,9 @@ It is designed for security engineers, reverse engineers, incident responders, a
 HexWalk combines a structured, filesystem-based keyword taxonomy with an interactive curses-based user interface, allowing analysts to explore findings hierarchically (domain → subcategory → keyword), filter results dynamically, and export structured reports.
 
 ---
+
 ## Images
+
 <p float="middle">
 <img height="400" alt="Hits" src="resources/hexwalk_hits.png" /><br>
 <img height="140" alt="Hex" src="resources/hexwalk_hex.png" />
@@ -56,8 +58,8 @@ HexWalk uses a **filesystem-based keyword hierarchy**:
 
 - Each **directory** represents a *domain/category*
 - Each `.txt` file represents a *subcategory*
-   - Each line in a file represents a *keyword*
-   - Keywords can be a regex if prepended by *regex:*
+  - Each line in a file represents a *keyword*
+  - Keywords can be a regex if prepended by *regex:*
 - Files with extension `.yara` contains YARA rules
 - Comment lines (`#`) and empty lines are ignored
 
@@ -127,10 +129,12 @@ hexwalk <file>
 
 ### Optional Flags
 
+
 ```
 --summary     Write summary file and exit
 --export      Write JSON export file and exit
 ```
+
 
 Examples:
 
