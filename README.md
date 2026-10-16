@@ -98,8 +98,6 @@ git clone git@github.com:curiousmaster/hexwalk.git
 cd hexwalk
 ```
 
-```
-
 Install into `/usr/local`:
 
 ```
